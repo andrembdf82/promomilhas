@@ -139,39 +139,54 @@ let sock = null;
 
 async function connectWhatsApp() {
   try {
+    // Limpar sessões antigas do whatsapp-web.js (formato Chromium)
+    if (fs.existsSync(SESSION_PATH)) {
+      const items = fs.readdirSync(SESSION_PATH);
+      const hasOldFormat = items.some(i => i.startsWith('session-'));
+      if (hasOldFormat) {
+        log('⚠️  Sessões antigas do whatsapp-web.js detectadas. Limpando...');
+        for (const item of items) {
+          if (item.startsWith('session-')) {
+            fs.rmSync(path.join(SESSION_PATH, item), { recursive: true, force: true });
+          }
+        }
+        log('✅ Sessões antigas removidas. Será necessário escanear o QR novamente.');
+      }
+    }
+
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_PATH);
 
     sock = makeWASocket({
       auth: state,
       browser: ['Ubuntu', 'Chrome', '20.0.04'],
-      // Otimizações de memória
       logger: minimalLogger,
-      shouldIgnoreJid: () => false,
-      markOnlineAfterReceivingMessage: true,
       syncFullHistory: false,
-      retryRequestDelayMs: 100,
-      maxMsgsInMemory: 10,
     });
-
-    reconnectAttempts = 0;
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', (update) => {
       const { connection, lastDisconnect, qr } = update;
 
+      log('🔍 connection.update:', JSON.stringify({ connection, qr: qr ? '(QR presente)' : undefined, error: lastDisconnect?.error?.message }));
+
       if (qr) {
-        log('📷 QR recebido - escaneie com seu WhatsApp');
-        QRCode.toString(qr, { type: 'terminal', width: 10 }, (err, qrString) => {
+        log('📷 QR recebido - escaneie com seu WhatsApp:');
+        QRCode.toString(qr, { type: 'terminal', small: true }, (err, qrString) => {
           if (!err) {
             console.log(qrString);
+          } else {
+            logError('Erro ao gerar QR:', err.message);
           }
         });
         broadcast({ type: 'status', message: 'QR Code gerado - escaneie' });
       }
 
       if (connection === 'close') {
-        const shouldReconnect = new Boom(lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+        const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
+        log(`❌ Conexão fechada (código: ${statusCode}, motivo: ${lastDisconnect?.error?.message || 'desconhecido'})`);
 
         if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
           reconnectAttempts++;
@@ -184,6 +199,7 @@ async function connectWhatsApp() {
       }
 
       if (connection === 'open') {
+        reconnectAttempts = 0;
         log(`✅ Conectado (${sock.user?.name})`);
         broadcast({
           type: 'status',
