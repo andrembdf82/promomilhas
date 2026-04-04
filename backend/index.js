@@ -3,10 +3,21 @@ import { Boom } from '@hapi/boom';
 import { WebSocketServer } from 'ws';
 import fs from 'fs';
 import path from 'path';
+import QRCode from 'qrcode';
 
 // Logs leves apenas para o console
 const log = (...args) => console.log(...args);
 const logError = (...args) => console.error(...args);
+
+// Logger minimal para Baileys (evita erro de undefined)
+const minimalLogger = {
+  trace: () => {},
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  fatal: () => {}
+};
 
 // Configuração
 const SESSION_PATH = './sessions';
@@ -129,10 +140,9 @@ async function connectWhatsApp() {
 
     sock = makeWASocket({
       auth: state,
-      printQRInTerminal: true,
       browser: ['Ubuntu', 'Chrome', '20.0.04'],
       // Otimizações de memória
-      logger: undefined, // Sem logger pino
+      logger: minimalLogger,
       shouldIgnoreJid: () => false,
       markOnlineAfterReceivingMessage: true,
       syncFullHistory: false,
@@ -148,7 +158,12 @@ async function connectWhatsApp() {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        log('📷 QR recebido');
+        log('📷 QR recebido - escaneie com seu WhatsApp');
+        QRCode.toString(qr, { type: 'terminal', width: 10 }, (err, qrString) => {
+          if (!err) {
+            console.log(qrString);
+          }
+        });
         broadcast({ type: 'status', message: 'QR Code gerado - escaneie' });
       }
 
