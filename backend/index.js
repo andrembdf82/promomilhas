@@ -117,7 +117,7 @@ const wss = new WebSocketServer({ port: 3001 });
 const sockets = [];
 
 wss.on('connection', (ws) => {
-  log('🔌 Novo cliente conectado ao WebSocket');
+  log(`🔌 Novo cliente conectado ao WebSocket (total: ${sockets.length + 1})`);
   sockets.push(ws);
 
   ws.send(JSON.stringify({
@@ -140,6 +140,7 @@ wss.on('connection', (ws) => {
 
 function broadcast(data) {
   const json = JSON.stringify(data);
+  log(`[DEBUG] Broadcasting ${data.type} para ${sockets.length} clientes`);
 
   for (let i = sockets.length - 1; i >= 0; i--) {
     const ws = sockets[i];
@@ -172,6 +173,7 @@ client.on('ready', () => {
   log('✅ WhatsApp conectado e pronto para uso!');
   log('Usuário:', client.info?.pushname);
   log('Número:', client.info?.wid?.user);
+  log('[DEBUG] Cliente pronto para receber mensagens!');
 
   broadcast({
     type: 'status',
@@ -233,7 +235,10 @@ async function safeGetChat(msg) {
 }
 
 async function processarMensagem(msg, origemEvento) {
+  log(`[DEBUG] Processando mensagem de ${msg.from} (${origemEvento})`);
+
   if (msg.type === 'notification_template') {
+    log(`[DEBUG] Ignorando notification_template`);
     return;
   }
 
@@ -309,12 +314,14 @@ async function processarMensagem(msg, origemEvento) {
 }
 
 client.on('message', async (msg) => {
+  log(`[DEBUG] Evento 'message' disparado de: ${msg.from}`);
   await processarMensagem(msg, 'message');
 });
 
-/*client.on('message_create', async (msg) => {
+client.on('message_create', async (msg) => {
+  log(`[DEBUG] Evento 'message_create' disparado de: ${msg.from}`);
   await processarMensagem(msg, 'message_create');
-});*/
+});
 
 const exitHandler = async (signal) => {
   log(`Encerrando aplicação... Sinal recebido: ${signal || 'desconhecido'}`);
