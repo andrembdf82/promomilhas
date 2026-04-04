@@ -84,13 +84,16 @@ const client = new Client({
     clientId: 'client-one'
   }),
   puppeteer: {
-    headless: false, // deixe false para depurar; depois pode voltar para true
+    headless: true, // true para servidor; false apenas para depuração local
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-gpu',
       '--disable-dev-shm-usage',
-      '--no-first-run'
+      '--disable-software-rasterizer',
+      '--disable-extensions',
+      '--no-first-run',
+      '--single-process'
     ]
   },
   restartOnAuthFail: true,

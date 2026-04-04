@@ -74,12 +74,21 @@ npm start
 
 7. **Chat Information**: The `safeGetChat()` function (`index.js:138-148`) safely retrieves chat metadata with fallback values if the operation fails.
 
-## Browser Compatibility
+## Browser Compatibility & Server Setup
 
-The project uses Puppeteer to automate WhatsApp Web. The `puppeteer` configuration disables various browser features for better stability in containerized/sandbox environments:
-- `--no-sandbox` and `--disable-setuid-sandbox`: Required for Docker/Linux containers
-- `--disable-gpu` and `--disable-dev-shm-usage`: Memory and GPU optimizations
-- `headless: false` in index.js: Set for debugging; change to `true` for production
+The project uses Puppeteer to automate WhatsApp Web. The `puppeteer` configuration is optimized for running on headless servers (EC2, Docker, etc.):
+
+**Puppeteer Arguments:**
+- `headless: true` — Required for servers without X11 display. Change to `false` only for local debugging
+- `--no-sandbox` and `--disable-setuid-sandbox` — Required for running in containers/restricted environments
+- `--disable-gpu` and `--disable-dev-shm-usage` — Memory and GPU optimizations
+- `--disable-software-rasterizer` and `--disable-extensions` — Further optimization for headless mode
+- `--single-process` — More stable in memory-constrained environments
+
+**Running on AWS EC2:**
+- The bot is configured to run headless by default
+- No X server or display needed
+- Suitable for Amazon Linux 2023 and other minimal Linux distributions
 
 ## Session Cache Cleanup
 
