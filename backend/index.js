@@ -26,22 +26,23 @@ const client = new Client({
   authStrategy: new LocalAuth({
     dataPath: './sessions'
   }),
+  webVersionCache: {
+    type: 'local'
+  },
   puppeteer: {
     headless: true,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
+      '--disable-gpu',
       '--no-first-run',
       '--no-zygote',
-      '--single-process',
-      '--disable-gpu',
       '--disable-extensions',
       '--disable-background-networking',
       '--disable-background-timer-throttling',
-      '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
-      '--mute-audio'
+      '--disable-backgrounding-occluded-windows'
     ]
   },
   restartOnAuthFail: true,
