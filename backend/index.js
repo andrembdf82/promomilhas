@@ -1,10 +1,9 @@
-import pkg from 'whatsapp-web.js';
-const { Client, LocalAuth } = pkg;
-
-import qrcode from 'qrcode-terminal';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, downloadMediaMessage } from '@whiskeysockets/baileys';
+import { Boom } from '@hapi/boom';
 import { WebSocketServer } from 'ws';
 import fs from 'fs';
 import path from 'path';
+import pino from 'pino';
 
 // Garantir que logs apareçam imediatamente no terminal
 const log = (...args) => {
@@ -17,7 +16,7 @@ const logError = (...args) => {
   process.stderr.write('');
 };
 
-log('Iniciando inicialização do cliente WhatsApp...');
+log('Iniciando inicialização do cliente WhatsApp com Baileys...');
 
 // Função para limpar cache da pasta sessions mantendo dados de autenticação
 function cleanupSessionCache() {
@@ -36,77 +35,30 @@ function cleanupSessionCache() {
 
       if (!stats.isDirectory()) return;
 
+      // Lista de diretórios que podem ser limpos com SEGURANÇA
       const safeCacheDirs = [
-        'Cache',
-        'Code Cache',
-        'CertificateRevocation',
-        'Subresource Filter'
+        'creds.json.bak',
+        'app-state-sync-version.json.bak'
       ];
 
-      safeCacheDirs.forEach((cacheDir) => {
-        const cachePath = path.join(clientPath, cacheDir);
-        if (fs.existsSync(cachePath)) {
+      safeCacheDirs.forEach((cacheFile) => {
+        const filePath = path.join(clientPath, cacheFile);
+        if (fs.existsSync(filePath)) {
           try {
-            fs.rmSync(cachePath, { recursive: true, force: true });
-            log(`♻️ Cache limpo: ${cacheDir}`);
+            fs.rmSync(filePath, { recursive: true, force: true });
+            log(`♻️  Arquivo de backup removido: ${cacheFile}`);
           } catch (err) {
-            logError(`⚠️ Erro ao limpar ${cacheDir}:`, err.message);
+            logError(`⚠️  Erro ao remover ${cacheFile}:`, err.message);
           }
         }
       });
-
-      const defaultPath = path.join(clientPath, 'Default');
-      if (fs.existsSync(defaultPath)) {
-        const logsToRemove = [
-          'History',
-          'History-journal',
-          'Network Action Predictor',
-          'Network Action Predictor-journal',
-          'Top Sites',
-          'Top Sites-journal'
-        ];
-
-        logsToRemove.forEach((logFile) => {
-          const filePath = path.join(defaultPath, logFile);
-          if (fs.existsSync(filePath)) {
-            try {
-              fs.rmSync(filePath, { recursive: true, force: true });
-              log(`♻️ Log removido: ${logFile}`);
-            } catch (err) {
-              logError(`⚠️ Erro ao remover ${logFile}:`, err.message);
-            }
-          }
-        });
-      }
     });
 
     log('✅ Limpeza de cache concluída - autenticação preservada');
   } catch (err) {
-    logError('⚠️ Erro ao executar limpeza de cache:', err.message);
+    logError('⚠️  Erro ao executar limpeza de cache:', err.message);
   }
 }
-
-const client = new Client({
-  authStrategy: new LocalAuth({
-    dataPath: './sessions',
-    clientId: 'client-one'
-  }),
-  puppeteer: {
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--no-zygote',
-      '--disable-gpu'
-    ]
-  },
-  restartOnAuthFail: true,
-  takeoverOnConflict: true,
-  takeoverTimeoutMs: 10000
-});
-
-log('Cliente WhatsApp configurado, aguardando inicialização...');
 
 const wss = new WebSocketServer({ port: 3001 });
 const sockets = [];
@@ -147,222 +99,210 @@ function broadcast(data) {
   }
 }
 
-client.on('qr', (qr) => {
-  log('📷 QR recebido');
-  qrcode.generate(qr, { small: true });
-  broadcast({
-    type: 'status',
-    message: 'QR Code gerado - escaneie com o WhatsApp'
-  });
-});
+async function processarMensagem(msg, sock) {
+  const jid = msg.key.remoteJid;
+  const fromMe = msg.key.fromMe;
+  const isGroup = jid.endsWith('@g.us');
 
-client.on('authenticated', () => {
-  log('✅ Autenticado com sucesso!');
-  broadcast({
-    type: 'status',
-    message: 'Autenticado com sucesso'
-  });
-});
-
-client.on('ready', () => {
-  log('✅ WhatsApp conectado e pronto para uso!');
-  log('Usuário:', client.info?.pushname);
-  log('Número:', client.info?.wid?.user);
-  log('[DEBUG] Cliente pronto para receber mensagens!');
-
-  broadcast({
-    type: 'status',
-    message: 'Conectado',
-    user: client.info?.pushname || 'Desconhecido'
-  });
-});
-
-client.on('auth_failure', (msg) => {
-  logError('❌ Falha na autenticação:', msg);
-  broadcast({
-    type: 'status',
-    message: 'Falha na autenticação: ' + msg
-  });
-});
-
-client.on('disconnected', (reason) => {
-  log('❌ Cliente desconectado:', reason);
-  broadcast({
-    type: 'status',
-    message: 'Desconectado: ' + reason
-  });
-});
-
-client.on('change_state', (state) => {
-  log('🔄 Estado do cliente mudou para:', state);
-  broadcast({
-    type: 'status',
-    message: 'Estado: ' + state
-  });
-});
-
-client.on('loading_screen', (percent, message) => {
-  log(`🔄 Carregando: ${percent}% - ${message}`);
-  broadcast({
-    type: 'status',
-    message: `Carregando: ${percent}% - ${message}`
-  });
-});
-
-client.on('error', (error) => {
-  logError('⚠️ Erro no cliente:', error);
-  broadcast({
-    type: 'status',
-    message: 'Erro: ' + (error?.message || String(error))
-  });
-});
-
-async function safeGetChat(msg) {
-  try {
-    return await msg.getChat();
-  } catch (error) {
-    logError('❌ Erro ao obter informações do chat:', error.message);
-    return {
-      isGroup: false,
-      name: 'Chat desconhecido'
-    };
-  }
-}
-
-async function processarMensagem(msg, origemEvento) {
-  log(`[DEBUG] Processando mensagem de ${msg.from} (${origemEvento}) tipo=${msg.type} fromMe=${msg.fromMe}`);
+  log(`[DEBUG] Processando mensagem de ${jid} (fromMe=${fromMe})`);
 
   try {
-    const chat = await safeGetChat(msg);
-
-    // Diagnóstico explícito para notification_template
-    if (msg.type === 'notification_template') {
-      log('📩 NOTIFICATION_TEMPLATE RECEBIDO', {
-        id: msg.id?._serialized,
-        from: msg.from,
-        to: msg.to,
-        fromMe: msg.fromMe,
-        type: msg.type,
-        hasMedia: msg.hasMedia,
-        timestamp: new Date(msg.timestamp * 1000).toLocaleString('pt-BR'),
-        body: msg.body || '[Sem texto]',
-        chatName: chat.name || 'Chat privado',
-        isGroup: chat.isGroup || false
-      });
-
-      // Se quiser ignorar no front, remova este broadcast
-      broadcast({
-        type: 'message',
-        from: msg.from,
-        body: msg.body || '[Sem texto]',
-        messageType: msg.type,
-        isGroup: chat.isGroup || false,
-        chatName: chat.name || 'Chat privado',
-        timestamp: msg.timestamp,
-        fromMe: msg.fromMe,
-        sourceEvent: origemEvento
-      });
-
+    // Ignorar mensagens do próprio número (opcional)
+    if (fromMe) {
+      log(`[DEBUG] Ignorando mensagem enviada por mim`);
       return;
     }
 
-    log(`\n📩 MENSAGEM RECEBIDA - ${origemEvento}`);
-    log(JSON.stringify({
-      id: msg.id?._serialized,
-      from: msg.from,
-      to: msg.to,
-      fromMe: msg.fromMe,
-      type: msg.type,
-      hasMedia: msg.hasMedia,
-      timestamp: new Date(msg.timestamp * 1000).toLocaleString('pt-BR'),
-      body: msg.body?.substring(0, 100) || '[Sem texto]',
-      chatName: chat.name || 'Chat privado',
-      isGroup: chat.isGroup || false
-    }, null, 2));
+    // Extrair texto da mensagem
+    const body = msg.message?.conversation
+      || msg.message?.extendedTextMessage?.text
+      || msg.message?.imageMessage?.caption
+      || '';
 
-    if (msg.hasMedia) {
+    // Obter nome do chat
+    let chatName = jid;
+    if (isGroup) {
+      try {
+        const meta = await sock.groupMetadata(jid);
+        chatName = meta?.subject || jid;
+      } catch (err) {
+        log(`[DEBUG] Erro ao obter metadata do grupo: ${err.message}`);
+        chatName = jid;
+      }
+    }
+
+    // Processar imagem
+    if (msg.message?.imageMessage) {
       try {
         log('📎 Mensagem com mídia detectada...');
-        const media = await msg.downloadMedia();
+        const buffer = await downloadMediaMessage(msg, 'buffer', {});
+        const base64 = buffer.toString('base64');
 
-        if (media) {
-          log(`✅ Mídia recebida (${media.mimetype || 'sem mimetype'})`);
+        log(`✅ Mídia recebida (image/jpeg)`);
 
-          if (media.mimetype && media.mimetype.startsWith('image/')) {
-            broadcast({
-              type: 'media',
-              from: msg.from,
-              body: msg.body || '',
-              mediaType: media.mimetype || '',
-              data: media.data || null,
-              filename: media.filename || null,
-              messageType: msg.type,
-              isGroup: chat.isGroup || false,
-              chatName: chat.name || 'Chat privado',
-              timestamp: msg.timestamp,
-              fromMe: msg.fromMe,
-              sourceEvent: origemEvento
-            });
-
-            return;
-          } else {
-            log(`⚠️ Mídia ignorada - tipo não suportado: ${media.mimetype}`);
-          }
-        } else {
-          log('⚠️ downloadMedia retornou null');
-        }
+        broadcast({
+          type: 'media',
+          from: jid,
+          body: msg.message.imageMessage.caption || '',
+          mediaType: 'image/jpeg',
+          data: base64,
+          filename: msg.message.imageMessage.filename || null,
+          messageType: 'image',
+          isGroup,
+          chatName,
+          timestamp: msg.messageTimestamp || Math.floor(Date.now() / 1000),
+          fromMe,
+          sourceEvent: 'messages.upsert'
+        });
+        return;
       } catch (mediaError) {
         logError('❌ Erro ao processar mídia:', mediaError.message);
       }
     }
 
-    if (msg.body || msg.type) {
+    // Processar texto
+    if (body) {
+      log(`\n📩 MENSAGEM RECEBIDA`);
+      log(JSON.stringify({
+        from: jid,
+        body: body.substring(0, 100),
+        isGroup,
+        chatName,
+        timestamp: new Date((msg.messageTimestamp || Math.floor(Date.now() / 1000)) * 1000).toLocaleString('pt-BR'),
+        fromMe
+      }, null, 2));
+
       broadcast({
         type: 'message',
-        from: msg.from,
-        body: msg.body || '[Sem texto]',
-        messageType: msg.type,
-        isGroup: chat.isGroup || false,
-        chatName: chat.name || 'Chat privado',
-        timestamp: msg.timestamp,
-        fromMe: msg.fromMe,
-        sourceEvent: origemEvento
+        from: jid,
+        body,
+        messageType: 'chat',
+        isGroup,
+        chatName,
+        timestamp: msg.messageTimestamp || Math.floor(Date.now() / 1000),
+        fromMe,
+        sourceEvent: 'messages.upsert'
       });
     }
   } catch (error) {
-    logError(`⚠️ Erro ao processar mensagem no evento ${origemEvento}:`, error.message);
+    logError(`⚠️ Erro ao processar mensagem:`, error.message);
     logError(error.stack);
   }
 }
 
-client.on('message', async (msg) => {
-  log('[DEBUG] Evento message disparado', {
-    from: msg.from,
-    type: msg.type,
-    body: msg.body || '[Sem texto]',
-    fromMe: msg.fromMe
-  });
-  await processarMensagem(msg, 'message');
-});
+async function connectWhatsApp() {
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState('./sessions');
 
-client.on('message_create', async (msg) => {
-  log('[DEBUG] Evento message_create disparado', {
-    from: msg.from,
-    type: msg.type,
-    body: msg.body || '[Sem texto]',
-    fromMe: msg.fromMe
-  });
-  await processarMensagem(msg, 'message_create');
-});
+    const sock = makeWASocket({
+      auth: state,
+      printQRInTerminal: true,
+      browser: ['Ubuntu', 'Chrome', '20.0.04'],
+      logger: pino({ level: 'silent' })
+    });
+
+    // Salvar credenciais automaticamente
+    sock.ev.on('creds.update', saveCreds);
+
+    // Eventos de conexão
+    sock.ev.on('connection.update', (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        log('📷 QR recebido - escaneie com o WhatsApp');
+        broadcast({
+          type: 'status',
+          message: 'QR Code gerado - escaneie com o WhatsApp'
+        });
+      }
+
+      if (connection === 'close') {
+        const shouldReconnect = new Boom(lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+
+        if (shouldReconnect) {
+          log('🔄 Reconectando ao WhatsApp...');
+          broadcast({
+            type: 'status',
+            message: 'Reconectando...'
+          });
+          setTimeout(() => connectWhatsApp(), 3000);
+        } else {
+          log('❌ Desconectado permanentemente - faça login novamente');
+          broadcast({
+            type: 'status',
+            message: 'Desconectado - faça login novamente'
+          });
+        }
+      }
+
+      if (connection === 'open') {
+        log('✅ WhatsApp conectado e pronto para uso!');
+        log('Usuário:', sock.user?.name);
+        log('Número:', sock.user?.id);
+        log('[DEBUG] Cliente pronto para receber mensagens!');
+
+        broadcast({
+          type: 'status',
+          message: 'Conectado',
+          user: sock.user?.name || 'Desconhecido'
+        });
+      }
+
+      if (connection === 'connecting') {
+        log('🔄 Conectando ao WhatsApp...');
+        broadcast({
+          type: 'status',
+          message: 'Conectando...'
+        });
+      }
+    });
+
+    // Evento de erro
+    sock.ev.on('error', (error) => {
+      logError('⚠️ Erro no socket:', error.message);
+      broadcast({
+        type: 'status',
+        message: 'Erro: ' + error.message
+      });
+    });
+
+    // Processar mensagens
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      // Ignora histórico de mensagens carregado ao conectar
+      if (type !== 'notify') return;
+
+      for (const msg of messages) {
+        log(`[DEBUG] Evento messages.upsert disparado de: ${msg.key.remoteJid}`);
+        await processarMensagem(msg, sock);
+      }
+    });
+
+    // Status periódico
+    setInterval(() => {
+      if (sock.user) {
+        log(`Status do cliente: ✅ Conectado (${sock.user.name})`);
+      } else {
+        log('Status do cliente: ❌ Desconectado (aguardando autenticação)');
+      }
+    }, 10000);
+
+    return sock;
+  } catch (err) {
+    logError('❌ Erro ao inicializar o cliente WhatsApp:', err);
+    broadcast({
+      type: 'status',
+      message: 'Erro ao inicializar: ' + err.message
+    });
+    process.exit(1);
+  }
+}
 
 const exitHandler = async (signal) => {
   log(`Encerrando aplicação... Sinal recebido: ${signal || 'desconhecido'}`);
   try {
-    await client.destroy();
-    log('Cliente WhatsApp desconectado com sucesso');
     process.exit(0);
   } catch (err) {
-    logError('Erro ao encerrar o cliente:', err);
+    logError('Erro ao encerrar a aplicação:', err);
     process.exit(1);
   }
 };
@@ -380,28 +320,19 @@ process.on('unhandledRejection', async (reason) => {
   await exitHandler('unhandledRejection');
 });
 
-log('Iniciando cliente WhatsApp...');
+log('Iniciando cliente WhatsApp com Baileys...');
 
+// Executa limpeza de cache a cada 24 horas (86400000 ms)
 setInterval(() => {
   log('🧹 Iniciando limpeza de cache de sessão...');
   cleanupSessionCache();
 }, 24 * 60 * 60 * 1000);
 
+// Executa limpeza inicial na primeira inicialização
 cleanupSessionCache();
 
-client.initialize().catch((err) => {
-  logError('❌ Erro ao inicializar o cliente WhatsApp:', err);
-  broadcast({
-    type: 'status',
-    message: 'Erro ao inicializar: ' + err.message
-  });
+// Conectar ao WhatsApp
+connectWhatsApp().catch((err) => {
+  logError('Erro ao conectar:', err);
   process.exit(1);
 });
-
-setInterval(() => {
-  if (client.info) {
-    log(`Status do cliente: ✅ Conectado (${client.info.pushname})`);
-  } else {
-    log('Status do cliente: ❌ Desconectado (aguardando autenticação)');
-  }
-}, 10000);
