@@ -9,14 +9,17 @@ import QRCode from 'qrcode';
 const log = (...args) => console.log(...args);
 const logError = (...args) => console.error(...args);
 
-// Logger minimal para Baileys (evita erro de undefined)
+// Logger minimal para Baileys (precisa de .child() e .level)
+const noop = () => {};
 const minimalLogger = {
-  trace: () => {},
-  debug: () => {},
-  info: () => {},
-  warn: () => {},
-  error: () => {},
-  fatal: () => {}
+  level: 'silent',
+  trace: noop,
+  debug: noop,
+  info: noop,
+  warn: noop,
+  error: noop,
+  fatal: noop,
+  child() { return minimalLogger; }
 };
 
 // Configuração
