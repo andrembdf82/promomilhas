@@ -7,12 +7,13 @@ import fs from 'fs';
 import path from 'path';
 
 // Garantir que logs apareçam imediatamente no terminal
-const log = (msg) => {
-  console.log(msg);
+const log = (...args) => {
+  console.log(...args);
   process.stdout.write('');
 };
-const logError = (msg) => {
-  console.error(msg);
+
+const logError = (...args) => {
+  console.error(...args);
   process.stderr.write('');
 };
 
@@ -35,8 +36,6 @@ function cleanupSessionCache() {
 
       if (!stats.isDirectory()) return;
 
-      // Lista de diretórios que podem ser limpos com SEGURANÇA
-      // Contêm apenas cache do navegador, não dados de autenticação
       const safeCacheDirs = [
         'Cache',
         'Code Cache',
@@ -49,14 +48,13 @@ function cleanupSessionCache() {
         if (fs.existsSync(cachePath)) {
           try {
             fs.rmSync(cachePath, { recursive: true, force: true });
-            log(`♻️  Cache limpo: ${cacheDir}`);
+            log(`♻️ Cache limpo: ${cacheDir}`);
           } catch (err) {
-            logError(`⚠️  Erro ao limpar ${cacheDir}:`, err.message);
+            logError(`⚠️ Erro ao limpar ${cacheDir}:`, err.message);
           }
         }
       });
 
-      // Limpa logs antigos em Default/
       const defaultPath = path.join(clientPath, 'Default');
       if (fs.existsSync(defaultPath)) {
         const logsToRemove = [
@@ -73,9 +71,9 @@ function cleanupSessionCache() {
           if (fs.existsSync(filePath)) {
             try {
               fs.rmSync(filePath, { recursive: true, force: true });
-              log(`♻️  Log removido: ${logFile}`);
+              log(`♻️ Log removido: ${logFile}`);
             } catch (err) {
-              logError(`⚠️  Erro ao remover ${logFile}:`, err.message);
+              logError(`⚠️ Erro ao remover ${logFile}:`, err.message);
             }
           }
         });
@@ -84,7 +82,7 @@ function cleanupSessionCache() {
 
     log('✅ Limpeza de cache concluída - autenticação preservada');
   } catch (err) {
-    logError('⚠️  Erro ao executar limpeza de cache:', err.message);
+    logError('⚠️ Erro ao executar limpeza de cache:', err.message);
   }
 }
 
@@ -94,7 +92,7 @@ const client = new Client({
     clientId: 'client-one'
   }),
   puppeteer: {
-    headless: true, // true para servidor; false apenas para depuração local
+    headless: true,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -235,15 +233,41 @@ async function safeGetChat(msg) {
 }
 
 async function processarMensagem(msg, origemEvento) {
-  log(`[DEBUG] Processando mensagem de ${msg.from} (${origemEvento})`);
-
-  if (msg.type === 'notification_template') {
-    log(`[DEBUG] Ignorando notification_template`);
-    return;
-  }
+  log(`[DEBUG] Processando mensagem de ${msg.from} (${origemEvento}) tipo=${msg.type} fromMe=${msg.fromMe}`);
 
   try {
     const chat = await safeGetChat(msg);
+
+    // Diagnóstico explícito para notification_template
+    if (msg.type === 'notification_template') {
+      log('📩 NOTIFICATION_TEMPLATE RECEBIDO', {
+        id: msg.id?._serialized,
+        from: msg.from,
+        to: msg.to,
+        fromMe: msg.fromMe,
+        type: msg.type,
+        hasMedia: msg.hasMedia,
+        timestamp: new Date(msg.timestamp * 1000).toLocaleString('pt-BR'),
+        body: msg.body || '[Sem texto]',
+        chatName: chat.name || 'Chat privado',
+        isGroup: chat.isGroup || false
+      });
+
+      // Se quiser ignorar no front, remova este broadcast
+      broadcast({
+        type: 'message',
+        from: msg.from,
+        body: msg.body || '[Sem texto]',
+        messageType: msg.type,
+        isGroup: chat.isGroup || false,
+        chatName: chat.name || 'Chat privado',
+        timestamp: msg.timestamp,
+        fromMe: msg.fromMe,
+        sourceEvent: origemEvento
+      });
+
+      return;
+    }
 
     log(`\n📩 MENSAGEM RECEBIDA - ${origemEvento}`);
     log(JSON.stringify({
@@ -254,7 +278,9 @@ async function processarMensagem(msg, origemEvento) {
       type: msg.type,
       hasMedia: msg.hasMedia,
       timestamp: new Date(msg.timestamp * 1000).toLocaleString('pt-BR'),
-      body: msg.body?.substring(0, 100) || '[Sem texto]'
+      body: msg.body?.substring(0, 100) || '[Sem texto]',
+      chatName: chat.name || 'Chat privado',
+      isGroup: chat.isGroup || false
     }, null, 2));
 
     if (msg.hasMedia) {
@@ -265,7 +291,6 @@ async function processarMensagem(msg, origemEvento) {
         if (media) {
           log(`✅ Mídia recebida (${media.mimetype || 'sem mimetype'})`);
 
-          // Apenas faz broadcast se for imagem
           if (media.mimetype && media.mimetype.startsWith('image/')) {
             broadcast({
               type: 'media',
@@ -294,11 +319,11 @@ async function processarMensagem(msg, origemEvento) {
       }
     }
 
-    if (msg.body) {
+    if (msg.body || msg.type) {
       broadcast({
         type: 'message',
         from: msg.from,
-        body: msg.body,
+        body: msg.body || '[Sem texto]',
         messageType: msg.type,
         isGroup: chat.isGroup || false,
         chatName: chat.name || 'Chat privado',
@@ -314,12 +339,22 @@ async function processarMensagem(msg, origemEvento) {
 }
 
 client.on('message', async (msg) => {
-  log(`[DEBUG] Evento 'message' disparado de: ${msg.from}`);
+  log('[DEBUG] Evento message disparado', {
+    from: msg.from,
+    type: msg.type,
+    body: msg.body || '[Sem texto]',
+    fromMe: msg.fromMe
+  });
   await processarMensagem(msg, 'message');
 });
 
 client.on('message_create', async (msg) => {
-  log(`[DEBUG] Evento 'message_create' disparado de: ${msg.from}`);
+  log('[DEBUG] Evento message_create disparado', {
+    from: msg.from,
+    type: msg.type,
+    body: msg.body || '[Sem texto]',
+    fromMe: msg.fromMe
+  });
   await processarMensagem(msg, 'message_create');
 });
 
@@ -350,14 +385,11 @@ process.on('unhandledRejection', async (reason) => {
 
 log('Iniciando cliente WhatsApp...');
 
-// Executa limpeza de cache a cada 24 horas (86400000 ms)
-// Pode ajustar o intervalo conforme necessário
 setInterval(() => {
   log('🧹 Iniciando limpeza de cache de sessão...');
   cleanupSessionCache();
 }, 24 * 60 * 60 * 1000);
 
-// Executa limpeza inicial na primeira inicialização
 cleanupSessionCache();
 
 client.initialize().catch((err) => {
