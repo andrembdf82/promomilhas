@@ -3,92 +3,46 @@ import { Boom } from '@hapi/boom';
 import { WebSocketServer } from 'ws';
 import fs from 'fs';
 import path from 'path';
-import pino from 'pino';
 
-// Garantir que logs apareçam imediatamente no terminal
-const log = (...args) => {
-  console.log(...args);
-  process.stdout.write('');
-};
+// Logs leves apenas para o console
+const log = (...args) => console.log(...args);
+const logError = (...args) => console.error(...args);
 
-const logError = (...args) => {
-  console.error(...args);
-  process.stderr.write('');
-};
+// Configuração
+const SESSION_PATH = './sessions';
+const WS_PORT = 3001;
+const MAX_RECONNECT_ATTEMPTS = 5;
+const RECONNECT_DELAY = 5000; // 5 segundos
+const STATUS_INTERVAL = 60000; // 1 minuto (em vez de 10 segundos)
 
-log('Iniciando inicialização do cliente WhatsApp com Baileys...');
+log('▶️  Iniciando cliente WhatsApp (Baileys)...');
 
-// Função para limpar cache da pasta sessions mantendo dados de autenticação
-function cleanupSessionCache() {
-  const sessionPath = './sessions';
-
-  if (!fs.existsSync(sessionPath)) {
-    return;
-  }
-
-  try {
-    const dirs = fs.readdirSync(sessionPath);
-
-    dirs.forEach((clientDir) => {
-      const clientPath = path.join(sessionPath, clientDir);
-      const stats = fs.statSync(clientPath);
-
-      if (!stats.isDirectory()) return;
-
-      // Lista de diretórios que podem ser limpos com SEGURANÇA
-      const safeCacheDirs = [
-        'creds.json.bak',
-        'app-state-sync-version.json.bak'
-      ];
-
-      safeCacheDirs.forEach((cacheFile) => {
-        const filePath = path.join(clientPath, cacheFile);
-        if (fs.existsSync(filePath)) {
-          try {
-            fs.rmSync(filePath, { recursive: true, force: true });
-            log(`♻️  Arquivo de backup removido: ${cacheFile}`);
-          } catch (err) {
-            logError(`⚠️  Erro ao remover ${cacheFile}:`, err.message);
-          }
-        }
-      });
-    });
-
-    log('✅ Limpeza de cache concluída - autenticação preservada');
-  } catch (err) {
-    logError('⚠️  Erro ao executar limpeza de cache:', err.message);
-  }
-}
-
-const wss = new WebSocketServer({ port: 3001 });
+// WebSocket Server
+const wss = new WebSocketServer({ port: WS_PORT });
 const sockets = [];
 
 wss.on('connection', (ws) => {
-  log(`🔌 Novo cliente conectado ao WebSocket (total: ${sockets.length + 1})`);
   sockets.push(ws);
+  log(`🔌 WebSocket conectado (${sockets.length} clientes)`);
 
-  ws.send(JSON.stringify({
-    type: 'status',
-    message: 'Conectado ao WebSocket'
-  }));
+  ws.send(JSON.stringify({ type: 'status', message: 'Conectado ao WebSocket' }));
 
   ws.on('close', () => {
-    log('🔌 Cliente WebSocket desconectado');
-    const index = sockets.indexOf(ws);
-    if (index !== -1) {
-      sockets.splice(index, 1);
-    }
+    const idx = sockets.indexOf(ws);
+    if (idx !== -1) sockets.splice(idx, 1);
+    log(`🔌 WebSocket desconectado (${sockets.length} clientes)`);
   });
 
-  ws.on('error', (err) => {
-    logError('Erro no WebSocket:', err.message);
+  ws.on('error', () => {
+    const idx = sockets.indexOf(ws);
+    if (idx !== -1) sockets.splice(idx, 1);
   });
 });
 
+// Broadcast leve
 function broadcast(data) {
+  if (sockets.length === 0) return;
   const json = JSON.stringify(data);
-  log(`[DEBUG] Broadcasting ${data.type} para ${sockets.length} clientes`);
-
   for (let i = sockets.length - 1; i >= 0; i--) {
     const ws = sockets[i];
     if (ws.readyState === 1) {
@@ -99,79 +53,55 @@ function broadcast(data) {
   }
 }
 
+// Processar mensagens
 async function processarMensagem(msg, sock) {
-  const jid = msg.key.remoteJid;
-  const fromMe = msg.key.fromMe;
-  const isGroup = jid.endsWith('@g.us');
-
-  log(`[DEBUG] Processando mensagem de ${jid} (fromMe=${fromMe})`);
-
   try {
-    // Ignorar mensagens do próprio número (opcional)
-    if (fromMe) {
-      log(`[DEBUG] Ignorando mensagem enviada por mim`);
-      return;
-    }
+    const jid = msg.key.remoteJid;
+    const fromMe = msg.key.fromMe;
+    const isGroup = jid.endsWith('@g.us');
 
-    // Extrair texto da mensagem
-    const body = msg.message?.conversation
-      || msg.message?.extendedTextMessage?.text
-      || msg.message?.imageMessage?.caption
-      || '';
+    if (fromMe) return; // Ignorar mensagens próprias
 
-    // Obter nome do chat
     let chatName = jid;
     if (isGroup) {
       try {
-        const meta = await sock.groupMetadata(jid);
+        const meta = await sock.groupMetadata(jid).catch(() => null);
         chatName = meta?.subject || jid;
-      } catch (err) {
-        log(`[DEBUG] Erro ao obter metadata do grupo: ${err.message}`);
-        chatName = jid;
+      } catch (e) {
+        // Ignorar erro silenciosamente
       }
     }
 
-    // Processar imagem
+    // Imagem
     if (msg.message?.imageMessage) {
       try {
-        log('📎 Mensagem com mídia detectada...');
         const buffer = await downloadMediaMessage(msg, 'buffer', {});
-        const base64 = buffer.toString('base64');
-
-        log(`✅ Mídia recebida (image/jpeg)`);
-
         broadcast({
           type: 'media',
           from: jid,
           body: msg.message.imageMessage.caption || '',
           mediaType: 'image/jpeg',
-          data: base64,
-          filename: msg.message.imageMessage.filename || null,
+          data: buffer.toString('base64'),
+          filename: null,
           messageType: 'image',
           isGroup,
           chatName,
-          timestamp: msg.messageTimestamp || Math.floor(Date.now() / 1000),
+          timestamp: msg.messageTimestamp || Date.now(),
           fromMe,
           sourceEvent: 'messages.upsert'
         });
-        return;
-      } catch (mediaError) {
-        logError('❌ Erro ao processar mídia:', mediaError.message);
+      } catch (e) {
+        logError('Erro ao processar imagem:', e.message);
       }
+      return;
     }
 
-    // Processar texto
-    if (body) {
-      log(`\n📩 MENSAGEM RECEBIDA`);
-      log(JSON.stringify({
-        from: jid,
-        body: body.substring(0, 100),
-        isGroup,
-        chatName,
-        timestamp: new Date((msg.messageTimestamp || Math.floor(Date.now() / 1000)) * 1000).toLocaleString('pt-BR'),
-        fromMe
-      }, null, 2));
+    // Texto
+    const body = msg.message?.conversation
+      || msg.message?.extendedTextMessage?.text || '';
 
+    if (body) {
+      log(`📨 ${jid}: ${body.substring(0, 50)}`);
       broadcast({
         type: 'message',
         from: jid,
@@ -179,160 +109,107 @@ async function processarMensagem(msg, sock) {
         messageType: 'chat',
         isGroup,
         chatName,
-        timestamp: msg.messageTimestamp || Math.floor(Date.now() / 1000),
+        timestamp: msg.messageTimestamp || Date.now(),
         fromMe,
         sourceEvent: 'messages.upsert'
       });
     }
   } catch (error) {
-    logError(`⚠️ Erro ao processar mensagem:`, error.message);
-    logError(error.stack);
+    logError('Erro ao processar mensagem:', error.message);
   }
 }
 
+// Conectar ao WhatsApp
+let reconnectAttempts = 0;
+let sock = null;
+
 async function connectWhatsApp() {
   try {
-    const { state, saveCreds } = await useMultiFileAuthState('./sessions');
+    const { state, saveCreds } = await useMultiFileAuthState(SESSION_PATH);
 
-    const sock = makeWASocket({
+    sock = makeWASocket({
       auth: state,
       printQRInTerminal: true,
       browser: ['Ubuntu', 'Chrome', '20.0.04'],
-      logger: pino({ level: 'silent' })
+      // Otimizações de memória
+      logger: undefined, // Sem logger pino
+      shouldIgnoreJid: () => false,
+      markOnlineAfterReceivingMessage: true,
+      syncFullHistory: false,
+      retryRequestDelayMs: 100,
+      maxMsgsInMemory: 10,
     });
 
-    // Salvar credenciais automaticamente
+    reconnectAttempts = 0;
+
     sock.ev.on('creds.update', saveCreds);
 
-    // Eventos de conexão
     sock.ev.on('connection.update', (update) => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        log('📷 QR recebido - escaneie com o WhatsApp');
-        broadcast({
-          type: 'status',
-          message: 'QR Code gerado - escaneie com o WhatsApp'
-        });
+        log('📷 QR recebido');
+        broadcast({ type: 'status', message: 'QR Code gerado - escaneie' });
       }
 
       if (connection === 'close') {
         const shouldReconnect = new Boom(lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
 
-        if (shouldReconnect) {
-          log('🔄 Reconectando ao WhatsApp...');
-          broadcast({
-            type: 'status',
-            message: 'Reconectando...'
-          });
-          setTimeout(() => connectWhatsApp(), 3000);
+        if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+          reconnectAttempts++;
+          log(`🔄 Reconectando... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+          setTimeout(() => connectWhatsApp(), RECONNECT_DELAY);
         } else {
-          log('❌ Desconectado permanentemente - faça login novamente');
-          broadcast({
-            type: 'status',
-            message: 'Desconectado - faça login novamente'
-          });
+          logError('❌ Desconectado - faça login novamente');
+          broadcast({ type: 'status', message: 'Desconectado' });
         }
       }
 
       if (connection === 'open') {
-        log('✅ WhatsApp conectado e pronto para uso!');
-        log('Usuário:', sock.user?.name);
-        log('Número:', sock.user?.id);
-        log('[DEBUG] Cliente pronto para receber mensagens!');
-
+        log(`✅ Conectado (${sock.user?.name})`);
         broadcast({
           type: 'status',
           message: 'Conectado',
-          user: sock.user?.name || 'Desconhecido'
-        });
-      }
-
-      if (connection === 'connecting') {
-        log('🔄 Conectando ao WhatsApp...');
-        broadcast({
-          type: 'status',
-          message: 'Conectando...'
+          user: sock.user?.name || 'Anônimo'
         });
       }
     });
 
-    // Evento de erro
-    sock.ev.on('error', (error) => {
-      logError('⚠️ Erro no socket:', error.message);
-      broadcast({
-        type: 'status',
-        message: 'Erro: ' + error.message
-      });
-    });
-
-    // Processar mensagens
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      // Ignora histórico de mensagens carregado ao conectar
       if (type !== 'notify') return;
-
       for (const msg of messages) {
-        log(`[DEBUG] Evento messages.upsert disparado de: ${msg.key.remoteJid}`);
         await processarMensagem(msg, sock);
       }
     });
 
-    // Status periódico
+    // Status leve (1x por minuto)
     setInterval(() => {
-      if (sock.user) {
-        log(`Status do cliente: ✅ Conectado (${sock.user.name})`);
+      if (sock?.user) {
+        log(`✅ Online (${sock.user.name})`);
       } else {
-        log('Status do cliente: ❌ Desconectado (aguardando autenticação)');
+        log('❌ Offline');
       }
-    }, 10000);
+    }, STATUS_INTERVAL);
 
-    return sock;
   } catch (err) {
-    logError('❌ Erro ao inicializar o cliente WhatsApp:', err);
-    broadcast({
-      type: 'status',
-      message: 'Erro ao inicializar: ' + err.message
-    });
-    process.exit(1);
+    logError('Erro ao inicializar:', err.message);
+    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      reconnectAttempts++;
+      setTimeout(() => connectWhatsApp(), RECONNECT_DELAY);
+    }
   }
 }
 
-const exitHandler = async (signal) => {
-  log(`Encerrando aplicação... Sinal recebido: ${signal || 'desconhecido'}`);
-  try {
-    process.exit(0);
-  } catch (err) {
-    logError('Erro ao encerrar a aplicação:', err);
-    process.exit(1);
-  }
-};
-
-process.on('SIGINT', () => exitHandler('SIGINT'));
-process.on('SIGTERM', () => exitHandler('SIGTERM'));
-
-process.on('uncaughtException', async (err) => {
-  logError('Erro não tratado:', err);
-  await exitHandler('uncaughtException');
+// Graceful shutdown
+process.on('SIGINT', () => {
+  log('Encerrando...');
+  process.exit(0);
 });
 
-process.on('unhandledRejection', async (reason) => {
-  logError('Promise rejeitada sem tratamento:', reason);
-  await exitHandler('unhandledRejection');
+process.on('SIGTERM', () => {
+  log('Encerrando...');
+  process.exit(0);
 });
 
-log('Iniciando cliente WhatsApp com Baileys...');
-
-// Executa limpeza de cache a cada 24 horas (86400000 ms)
-setInterval(() => {
-  log('🧹 Iniciando limpeza de cache de sessão...');
-  cleanupSessionCache();
-}, 24 * 60 * 60 * 1000);
-
-// Executa limpeza inicial na primeira inicialização
-cleanupSessionCache();
-
-// Conectar ao WhatsApp
-connectWhatsApp().catch((err) => {
-  logError('Erro ao conectar:', err);
-  process.exit(1);
-});
+// Conectar
+connectWhatsApp();

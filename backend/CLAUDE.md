@@ -74,21 +74,32 @@ npm start
 
 7. **Chat Information**: The `safeGetChat()` function (`index.js:138-148`) safely retrieves chat metadata with fallback values if the operation fails.
 
-## Browser Compatibility & Server Setup
+## Server Setup & Performance
 
-The project uses Puppeteer to automate WhatsApp Web. The `puppeteer` configuration is optimized for running on headless servers (EC2, Docker, etc.):
+The project uses **Baileys** to connect directly to WhatsApp via WebSocket protocol, without requiring Chromium/browser:
 
-**Puppeteer Arguments:**
-- `headless: true` — Required for servers without X11 display. Change to `false` only for local debugging
-- `--no-sandbox` and `--disable-setuid-sandbox` — Required for running in containers/restricted environments
-- `--disable-gpu` and `--disable-dev-shm-usage` — Memory and GPU optimizations
-- `--disable-software-rasterizer` and `--disable-extensions` — Further optimization for headless mode
-- `--single-process` — More stable in memory-constrained environments
+**Why Baileys (not whatsapp-web.js):**
+- Direct WebSocket connection to WhatsApp servers
+- No Puppeteer/Chromium needed (saves ~200MB RAM)
+- Lightweight and stable on t2.micro and other small instances
+- Better reliability for message delivery
+- Automatic reconnection with exponential backoff
 
-**Running on AWS EC2:**
-- The bot is configured to run headless by default
-- No X server or display needed
-- Suitable for Amazon Linux 2023 and other minimal Linux distributions
+**Optimizations for t2.micro (1GB RAM):**
+- No logger (removed pino logger for memory savings)
+- Minimized in-memory buffers (`maxMsgsInMemory: 10`)
+- Status updates only every 60 seconds (not every 10)
+- Max 5 reconnection attempts to prevent infinite loops
+- Lightweight broadcast function with socket cleanup
+- No async/await chains that pile up promises
+
+**Running on AWS EC2 t2.micro:**
+```bash
+npm start
+```
+- Expects ~80MB RAM baseline
+- Image downloads buffered then streamed (not kept in memory)
+- Suitable for production use on t2.micro, t2.small
 
 ## Session Cache Cleanup
 
