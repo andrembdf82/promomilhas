@@ -1,15 +1,18 @@
-import makeWASocket, { useMultiFileAuthState, DisconnectReason, downloadMediaMessage, Browsers } from '@whiskeysockets/baileys';
+import makeWASocket, {
+  useMultiFileAuthState,
+  DisconnectReason,
+  Browsers
+} from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
-import { WebSocketServer } from 'ws';
-import fs from 'fs';
-import path from 'path';
 import QRCode from 'qrcode';
 
-// Logs leves apenas para o console
+const SESSION_PATH = './sessions';
+const RECONNECT_DELAY = 5000;
+const MAX_RECONNECT_ATTEMPTS = 20;
+
 const log = (...args) => console.log(...args);
 const logError = (...args) => console.error(...args);
 
-// Logger minimal para Baileys (precisa de .child() e .level)
 const noop = () => {};
 const minimalLogger = {
   level: 'silent',
@@ -19,140 +22,85 @@ const minimalLogger = {
   warn: noop,
   error: noop,
   fatal: noop,
-  child() { return minimalLogger; }
+  child() {
+    return minimalLogger;
+  }
 };
 
-// Configuração
-const SESSION_PATH = './sessions';
-const WS_PORT = 3001;
-const MAX_RECONNECT_ATTEMPTS = 10;
-const RECONNECT_DELAY = 3000; // 3 segundos
-const STATUS_INTERVAL = 60000; // 1 minuto (em vez de 10 segundos)
-
-log('▶️  Iniciando cliente WhatsApp (Baileys)...');
-
-// WebSocket Server
-const wss = new WebSocketServer({ port: WS_PORT });
-const sockets = [];
-
-wss.on('connection', (ws) => {
-  sockets.push(ws);
-  log(`🔌 WebSocket conectado (${sockets.length} clientes)`);
-
-  ws.send(JSON.stringify({ type: 'status', message: 'Conectado ao WebSocket' }));
-
-  ws.on('close', () => {
-    const idx = sockets.indexOf(ws);
-    if (idx !== -1) sockets.splice(idx, 1);
-    log(`🔌 WebSocket desconectado (${sockets.length} clientes)`);
-  });
-
-  ws.on('error', () => {
-    const idx = sockets.indexOf(ws);
-    if (idx !== -1) sockets.splice(idx, 1);
-  });
-});
-
-// Broadcast leve
-function broadcast(data) {
-  if (sockets.length === 0) return;
-  const json = JSON.stringify(data);
-  for (let i = sockets.length - 1; i >= 0; i--) {
-    const ws = sockets[i];
-    if (ws.readyState === 1) {
-      ws.send(json);
-    } else {
-      sockets.splice(i, 1);
-    }
-  }
-}
-
-// Processar mensagens
-async function processarMensagem(msg, sock) {
-  try {
-    const jid = msg.key.remoteJid;
-    const fromMe = msg.key.fromMe;
-    const isGroup = jid.endsWith('@g.us');
-
-    if (fromMe) return; // Ignorar mensagens próprias
-
-    let chatName = jid;
-    if (isGroup) {
-      try {
-        const meta = await sock.groupMetadata(jid).catch(() => null);
-        chatName = meta?.subject || jid;
-      } catch (e) {
-        // Ignorar erro silenciosamente
-      }
-    }
-
-    // Imagem
-    if (msg.message?.imageMessage) {
-      try {
-        const buffer = await downloadMediaMessage(msg, 'buffer', {});
-        broadcast({
-          type: 'media',
-          from: jid,
-          body: msg.message.imageMessage.caption || '',
-          mediaType: 'image/jpeg',
-          data: buffer.toString('base64'),
-          filename: null,
-          messageType: 'image',
-          isGroup,
-          chatName,
-          timestamp: msg.messageTimestamp || Date.now(),
-          fromMe,
-          sourceEvent: 'messages.upsert'
-        });
-      } catch (e) {
-        logError('Erro ao processar imagem:', e.message);
-      }
-      return;
-    }
-
-    // Texto
-    const body = msg.message?.conversation
-      || msg.message?.extendedTextMessage?.text || '';
-
-    if (body) {
-      log(`📨 ${jid}: ${body.substring(0, 50)}`);
-      broadcast({
-        type: 'message',
-        from: jid,
-        body,
-        messageType: 'chat',
-        isGroup,
-        chatName,
-        timestamp: msg.messageTimestamp || Date.now(),
-        fromMe,
-        sourceEvent: 'messages.upsert'
-      });
-    }
-  } catch (error) {
-    logError('Erro ao processar mensagem:', error.message);
-  }
-}
-
-// Conectar ao WhatsApp
-let reconnectAttempts = 0;
 let sock = null;
+let reconnectAttempts = 0;
+let reconnectTimer = null;
+let isConnecting = false;
+let statusTimer = null;
+
+function limparTimers() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (statusTimer) {
+    clearInterval(statusTimer);
+    statusTimer = null;
+  }
+}
+
+function extrairTexto(msg) {
+  return (
+    msg.message?.conversation ||
+    msg.message?.extendedTextMessage?.text ||
+    msg.message?.imageMessage?.caption ||
+    msg.message?.videoMessage?.caption ||
+    msg.message?.documentMessage?.caption ||
+    msg.message?.buttonsResponseMessage?.selectedButtonId ||
+    msg.message?.listResponseMessage?.title ||
+    msg.message?.templateButtonReplyMessage?.selectedId ||
+    msg.message?.interactiveResponseMessage?.body?.text ||
+    ''
+  );
+}
+
+function agendarReconexao(motivo) {
+  if (reconnectTimer) return;
+
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    logError(`❌ Limite de reconexões atingido. Último motivo: ${motivo}`);
+    return;
+  }
+
+  reconnectAttempts += 1;
+  log(`🔄 Reconectando em ${RECONNECT_DELAY / 1000}s... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}) Motivo: ${motivo}`);
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectWhatsApp().catch((err) => {
+      logError('❌ Erro ao reconectar:', err?.message || err);
+      agendarReconexao('erro no connectWhatsApp');
+    });
+  }, RECONNECT_DELAY);
+}
+
+async function imprimirQR(qr) {
+  try {
+    const qrString = await QRCode.toString(qr, {
+      type: 'terminal',
+      small: true
+    });
+    console.log(qrString);
+  } catch (err) {
+    logError('❌ Erro ao gerar QR no terminal:', err.message);
+  }
+}
 
 async function connectWhatsApp() {
+  if (isConnecting) {
+    log('⏳ Já existe uma conexão em andamento, ignorando nova tentativa...');
+    return;
+  }
+
+  isConnecting = true;
+
   try {
-    // Limpar sessões antigas do whatsapp-web.js (formato Chromium)
-    if (fs.existsSync(SESSION_PATH)) {
-      const items = fs.readdirSync(SESSION_PATH);
-      const hasOldFormat = items.some(i => i.startsWith('session-'));
-      if (hasOldFormat) {
-        log('⚠️  Sessões antigas do whatsapp-web.js detectadas. Limpando...');
-        for (const item of items) {
-          if (item.startsWith('session-')) {
-            fs.rmSync(path.join(SESSION_PATH, item), { recursive: true, force: true });
-          }
-        }
-        log('✅ Sessões antigas removidas. Será necessário escanear o QR novamente.');
-      }
-    }
+    log('▶️ Iniciando cliente WhatsApp (Baileys)...');
 
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_PATH);
 
@@ -161,89 +109,132 @@ async function connectWhatsApp() {
       browser: Browsers.ubuntu('Chrome'),
       logger: minimalLogger,
       syncFullHistory: false,
+      markOnlineOnConnect: false,
+      defaultQueryTimeoutMs: 60000,
+      connectTimeoutMs: 60000,
+      qrTimeout: 40000,
+      keepAliveIntervalMs: 30000,
+      emitOwnEvents: false,
+      generateHighQualityLinkPreview: false
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
-      log('🔍 connection.update:', JSON.stringify({ connection, qr: qr ? '(QR presente)' : undefined, error: lastDisconnect?.error?.message }));
+      log('🔍 connection.update:', JSON.stringify({
+        connection,
+        qr: qr ? '(QR presente)' : undefined,
+        error: lastDisconnect?.error?.message
+      }));
 
       if (qr) {
-        log('📷 QR recebido - escaneie com seu WhatsApp:');
-        QRCode.toString(qr, { type: 'terminal', small: true }, (err, qrString) => {
-          if (!err) {
-            console.log(qrString);
-          } else {
-            logError('Erro ao gerar QR:', err.message);
-          }
-        });
-        broadcast({ type: 'status', message: 'QR Code gerado - escaneie' });
-      }
-
-      if (connection === 'close') {
-        const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-
-        log(`❌ Conexão fechada (código: ${statusCode}, motivo: ${lastDisconnect?.error?.message || 'desconhecido'})`);
-
-        if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-          reconnectAttempts++;
-          log(`🔄 Reconectando... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
-          setTimeout(() => connectWhatsApp(), RECONNECT_DELAY);
-        } else {
-          logError('❌ Desconectado - faça login novamente');
-          broadcast({ type: 'status', message: 'Desconectado' });
-        }
+        log('\n📷 QR recebido - escaneie com o WhatsApp:\n');
+        await imprimirQR(qr);
       }
 
       if (connection === 'open') {
         reconnectAttempts = 0;
-        log(`✅ Conectado (${sock.user?.name})`);
-        broadcast({
-          type: 'status',
-          message: 'Conectado',
-          user: sock.user?.name || 'Anônimo'
-        });
+        log(`✅ Conectado com sucesso!`);
+        log(`👤 Usuário: ${sock.user?.name || 'Desconhecido'}`);
+        log(`📱 JID: ${sock.user?.id || 'Desconhecido'}`);
+
+        if (!statusTimer) {
+          statusTimer = setInterval(() => {
+            if (sock?.user) {
+              log(`✅ Online (${sock.user?.name || 'sem nome'})`);
+            } else {
+              log('❌ Offline');
+            }
+          }, 60000);
+        }
+      }
+
+      if (connection === 'close') {
+        const boom = new Boom(lastDisconnect?.error);
+        const statusCode = boom?.output?.statusCode;
+        const motivo = lastDisconnect?.error?.message || 'desconhecido';
+
+        log(`❌ Conexão fechada (código: ${statusCode}, motivo: ${motivo})`);
+
+        const foiLogout = statusCode === DisconnectReason.loggedOut;
+
+        if (foiLogout) {
+          logError('❌ Sessão deslogada. Apague a pasta sessions e escaneie o QR novamente.');
+          return;
+        }
+
+        agendarReconexao(`close ${statusCode || ''} ${motivo}`);
       }
     });
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return;
+
       for (const msg of messages) {
-        await processarMensagem(msg, sock);
+        try {
+          if (!msg?.message) continue;
+          if (msg.key?.fromMe) continue;
+
+          const jid = msg.key?.remoteJid || 'desconhecido';
+          const texto = extrairTexto(msg);
+          const isGroup = jid.endsWith('@g.us');
+          const tipoMensagem = Object.keys(msg.message || {})[0] || 'desconhecido';
+          const data = msg.messageTimestamp
+            ? new Date(Number(msg.messageTimestamp) * 1000).toLocaleString('pt-BR')
+            : new Date().toLocaleString('pt-BR');
+
+          if (texto) {
+            log('\n==============================');
+            log('📩 MENSAGEM RECEBIDA');
+            log(`🕒 ${data}`);
+            log(`👤 De: ${jid}`);
+            log(`👥 Grupo: ${isGroup ? 'sim' : 'não'}`);
+            log(`🧩 Tipo: ${tipoMensagem}`);
+            log(`💬 Texto: ${texto}`);
+            log('==============================\n');
+          } else {
+            log('\n==============================');
+            log('📩 MENSAGEM RECEBIDA (sem texto)');
+            log(`🕒 ${data}`);
+            log(`👤 De: ${jid}`);
+            log(`👥 Grupo: ${isGroup ? 'sim' : 'não'}`);
+            log(`🧩 Tipo: ${tipoMensagem}`);
+            log('==============================\n');
+          }
+        } catch (err) {
+          logError('❌ Erro ao processar mensagem:', err.message);
+        }
       }
     });
 
-    // Status leve (1x por minuto)
-    setInterval(() => {
-      if (sock?.user) {
-        log(`✅ Online (${sock.user.name})`);
-      } else {
-        log('❌ Offline');
-      }
-    }, STATUS_INTERVAL);
-
   } catch (err) {
-    logError('Erro ao inicializar:', err.message);
-    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-      reconnectAttempts++;
-      setTimeout(() => connectWhatsApp(), RECONNECT_DELAY);
-    }
+    logError('❌ Erro ao inicializar:', err?.message || err);
+    agendarReconexao('erro na inicialização');
+  } finally {
+    isConnecting = false;
   }
 }
 
-// Graceful shutdown
 process.on('SIGINT', () => {
-  log('Encerrando...');
+  log('🛑 Encerrando aplicação...');
+  limparTimers();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
-  log('Encerrando...');
+  log('🛑 Encerrando aplicação...');
+  limparTimers();
   process.exit(0);
 });
 
-// Conectar
+process.on('uncaughtException', (err) => {
+  logError('❌ uncaughtException:', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  logError('❌ unhandledRejection:', reason);
+});
+
 connectWhatsApp();
