@@ -1,0 +1,21 @@
+# Session data and browser cache
+sessions/
+
+# Dependencies
+node_modules/
+
+# Browser cache
+.wwebjs_cache/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
