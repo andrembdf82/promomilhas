@@ -1,4 +1,4 @@
-import makeWASocket, { useMultiFileAuthState, DisconnectReason, downloadMediaMessage } from '@whiskeysockets/baileys';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, downloadMediaMessage, Browsers } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import { WebSocketServer } from 'ws';
 import fs from 'fs';
@@ -25,8 +25,8 @@ const minimalLogger = {
 // Configuração
 const SESSION_PATH = './sessions';
 const WS_PORT = 3001;
-const MAX_RECONNECT_ATTEMPTS = 5;
-const RECONNECT_DELAY = 5000; // 5 segundos
+const MAX_RECONNECT_ATTEMPTS = 10;
+const RECONNECT_DELAY = 3000; // 3 segundos
 const STATUS_INTERVAL = 60000; // 1 minuto (em vez de 10 segundos)
 
 log('▶️  Iniciando cliente WhatsApp (Baileys)...');
@@ -158,7 +158,7 @@ async function connectWhatsApp() {
 
     sock = makeWASocket({
       auth: state,
-      browser: ['Ubuntu', 'Chrome', '20.0.04'],
+      browser: Browsers.ubuntu('Chrome'),
       logger: minimalLogger,
       syncFullHistory: false,
     });
