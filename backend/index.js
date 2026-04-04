@@ -96,12 +96,9 @@ const client = new Client({
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-gpu',
       '--disable-dev-shm-usage',
-      '--disable-software-rasterizer',
-      '--disable-extensions',
-      '--no-first-run',
-      '--single-process'
+      '--no-zygote',
+      '--disable-gpu'
     ]
   },
   restartOnAuthFail: true,
