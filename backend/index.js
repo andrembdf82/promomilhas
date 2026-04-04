@@ -6,7 +6,17 @@ import { WebSocketServer } from 'ws';
 import fs from 'fs';
 import path from 'path';
 
-console.log('Iniciando inicialização do cliente WhatsApp...');
+// Garantir que logs apareçam imediatamente no terminal
+const log = (msg) => {
+  console.log(msg);
+  process.stdout.write('');
+};
+const logError = (msg) => {
+  console.error(msg);
+  process.stderr.write('');
+};
+
+log('Iniciando inicialização do cliente WhatsApp...');
 
 // Função para limpar cache da pasta sessions mantendo dados de autenticação
 function cleanupSessionCache() {
@@ -39,9 +49,9 @@ function cleanupSessionCache() {
         if (fs.existsSync(cachePath)) {
           try {
             fs.rmSync(cachePath, { recursive: true, force: true });
-            console.log(`♻️  Cache limpo: ${cacheDir}`);
+            log(`♻️  Cache limpo: ${cacheDir}`);
           } catch (err) {
-            console.error(`⚠️  Erro ao limpar ${cacheDir}:`, err.message);
+            logError(`⚠️  Erro ao limpar ${cacheDir}:`, err.message);
           }
         }
       });
@@ -63,18 +73,18 @@ function cleanupSessionCache() {
           if (fs.existsSync(filePath)) {
             try {
               fs.rmSync(filePath, { recursive: true, force: true });
-              console.log(`♻️  Log removido: ${logFile}`);
+              log(`♻️  Log removido: ${logFile}`);
             } catch (err) {
-              console.error(`⚠️  Erro ao remover ${logFile}:`, err.message);
+              logError(`⚠️  Erro ao remover ${logFile}:`, err.message);
             }
           }
         });
       }
     });
 
-    console.log('✅ Limpeza de cache concluída - autenticação preservada');
+    log('✅ Limpeza de cache concluída - autenticação preservada');
   } catch (err) {
-    console.error('⚠️  Erro ao executar limpeza de cache:', err.message);
+    logError('⚠️  Erro ao executar limpeza de cache:', err.message);
   }
 }
 
@@ -101,13 +111,13 @@ const client = new Client({
   takeoverTimeoutMs: 10000
 });
 
-console.log('Cliente WhatsApp configurado, aguardando inicialização...');
+log('Cliente WhatsApp configurado, aguardando inicialização...');
 
 const wss = new WebSocketServer({ port: 3001 });
 const sockets = [];
 
 wss.on('connection', (ws) => {
-  console.log('🔌 Novo cliente conectado ao WebSocket');
+  log('🔌 Novo cliente conectado ao WebSocket');
   sockets.push(ws);
 
   ws.send(JSON.stringify({
@@ -116,7 +126,7 @@ wss.on('connection', (ws) => {
   }));
 
   ws.on('close', () => {
-    console.log('🔌 Cliente WebSocket desconectado');
+    log('🔌 Cliente WebSocket desconectado');
     const index = sockets.indexOf(ws);
     if (index !== -1) {
       sockets.splice(index, 1);
@@ -124,7 +134,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('error', (err) => {
-    console.error('Erro no WebSocket:', err.message);
+    logError('Erro no WebSocket:', err.message);
   });
 });
 
@@ -142,7 +152,7 @@ function broadcast(data) {
 }
 
 client.on('qr', (qr) => {
-  console.log('📷 QR recebido');
+  log('📷 QR recebido');
   qrcode.generate(qr, { small: true });
   broadcast({
     type: 'status',
@@ -151,7 +161,7 @@ client.on('qr', (qr) => {
 });
 
 client.on('authenticated', () => {
-  console.log('✅ Autenticado com sucesso!');
+  log('✅ Autenticado com sucesso!');
   broadcast({
     type: 'status',
     message: 'Autenticado com sucesso'
@@ -159,9 +169,9 @@ client.on('authenticated', () => {
 });
 
 client.on('ready', () => {
-  console.log('✅ WhatsApp conectado e pronto para uso!');
-  console.log('Usuário:', client.info?.pushname);
-  console.log('Número:', client.info?.wid?.user);
+  log('✅ WhatsApp conectado e pronto para uso!');
+  log('Usuário:', client.info?.pushname);
+  log('Número:', client.info?.wid?.user);
 
   broadcast({
     type: 'status',
@@ -171,7 +181,7 @@ client.on('ready', () => {
 });
 
 client.on('auth_failure', (msg) => {
-  console.error('❌ Falha na autenticação:', msg);
+  logError('❌ Falha na autenticação:', msg);
   broadcast({
     type: 'status',
     message: 'Falha na autenticação: ' + msg
@@ -179,7 +189,7 @@ client.on('auth_failure', (msg) => {
 });
 
 client.on('disconnected', (reason) => {
-  console.log('❌ Cliente desconectado:', reason);
+  log('❌ Cliente desconectado:', reason);
   broadcast({
     type: 'status',
     message: 'Desconectado: ' + reason
@@ -187,7 +197,7 @@ client.on('disconnected', (reason) => {
 });
 
 client.on('change_state', (state) => {
-  console.log('🔄 Estado do cliente mudou para:', state);
+  log('🔄 Estado do cliente mudou para:', state);
   broadcast({
     type: 'status',
     message: 'Estado: ' + state
@@ -195,7 +205,7 @@ client.on('change_state', (state) => {
 });
 
 client.on('loading_screen', (percent, message) => {
-  console.log(`🔄 Carregando: ${percent}% - ${message}`);
+  log(`🔄 Carregando: ${percent}% - ${message}`);
   broadcast({
     type: 'status',
     message: `Carregando: ${percent}% - ${message}`
@@ -203,7 +213,7 @@ client.on('loading_screen', (percent, message) => {
 });
 
 client.on('error', (error) => {
-  console.error('⚠️ Erro no cliente:', error);
+  logError('⚠️ Erro no cliente:', error);
   broadcast({
     type: 'status',
     message: 'Erro: ' + (error?.message || String(error))
@@ -214,7 +224,7 @@ async function safeGetChat(msg) {
   try {
     return await msg.getChat();
   } catch (error) {
-    console.error('❌ Erro ao obter informações do chat:', error.message);
+    logError('❌ Erro ao obter informações do chat:', error.message);
     return {
       isGroup: false,
       name: 'Chat desconhecido'
@@ -230,25 +240,25 @@ async function processarMensagem(msg, origemEvento) {
   try {
     const chat = await safeGetChat(msg);
 
-    console.log(`📩 Evento ${origemEvento}`);
-    console.log({
+    log(`\n📩 MENSAGEM RECEBIDA - ${origemEvento}`);
+    log(JSON.stringify({
       id: msg.id?._serialized,
       from: msg.from,
       to: msg.to,
       fromMe: msg.fromMe,
       type: msg.type,
       hasMedia: msg.hasMedia,
-      timestamp: msg.timestamp,
+      timestamp: new Date(msg.timestamp * 1000).toLocaleString('pt-BR'),
       body: msg.body?.substring(0, 100) || '[Sem texto]'
-    });
+    }, null, 2));
 
     if (msg.hasMedia) {
       try {
-        console.log('📎 Mensagem com mídia detectada...');
+        log('📎 Mensagem com mídia detectada...');
         const media = await msg.downloadMedia();
 
         if (media) {
-          console.log(`✅ Mídia recebida (${media.mimetype || 'sem mimetype'})`);
+          log(`✅ Mídia recebida (${media.mimetype || 'sem mimetype'})`);
 
           // Apenas faz broadcast se for imagem
           if (media.mimetype && media.mimetype.startsWith('image/')) {
@@ -269,13 +279,13 @@ async function processarMensagem(msg, origemEvento) {
 
             return;
           } else {
-            console.log(`⚠️ Mídia ignorada - tipo não suportado: ${media.mimetype}`);
+            log(`⚠️ Mídia ignorada - tipo não suportado: ${media.mimetype}`);
           }
         } else {
-          console.log('⚠️ downloadMedia retornou null');
+          log('⚠️ downloadMedia retornou null');
         }
       } catch (mediaError) {
-        console.error('❌ Erro ao processar mídia:', mediaError.message);
+        logError('❌ Erro ao processar mídia:', mediaError.message);
       }
     }
 
@@ -293,8 +303,8 @@ async function processarMensagem(msg, origemEvento) {
       });
     }
   } catch (error) {
-    console.error(`⚠️ Erro ao processar mensagem no evento ${origemEvento}:`, error.message);
-    console.error(error.stack);
+    logError(`⚠️ Erro ao processar mensagem no evento ${origemEvento}:`, error.message);
+    logError(error.stack);
   }
 }
 
@@ -307,13 +317,13 @@ client.on('message', async (msg) => {
 });*/
 
 const exitHandler = async (signal) => {
-  console.log(`Encerrando aplicação... Sinal recebido: ${signal || 'desconhecido'}`);
+  log(`Encerrando aplicação... Sinal recebido: ${signal || 'desconhecido'}`);
   try {
     await client.destroy();
-    console.log('Cliente WhatsApp desconectado com sucesso');
+    log('Cliente WhatsApp desconectado com sucesso');
     process.exit(0);
   } catch (err) {
-    console.error('Erro ao encerrar o cliente:', err);
+    logError('Erro ao encerrar o cliente:', err);
     process.exit(1);
   }
 };
@@ -322,21 +332,21 @@ process.on('SIGINT', () => exitHandler('SIGINT'));
 process.on('SIGTERM', () => exitHandler('SIGTERM'));
 
 process.on('uncaughtException', async (err) => {
-  console.error('Erro não tratado:', err);
+  logError('Erro não tratado:', err);
   await exitHandler('uncaughtException');
 });
 
 process.on('unhandledRejection', async (reason) => {
-  console.error('Promise rejeitada sem tratamento:', reason);
+  logError('Promise rejeitada sem tratamento:', reason);
   await exitHandler('unhandledRejection');
 });
 
-console.log('Iniciando cliente WhatsApp...');
+log('Iniciando cliente WhatsApp...');
 
 // Executa limpeza de cache a cada 24 horas (86400000 ms)
 // Pode ajustar o intervalo conforme necessário
 setInterval(() => {
-  console.log('🧹 Iniciando limpeza de cache de sessão...');
+  log('🧹 Iniciando limpeza de cache de sessão...');
   cleanupSessionCache();
 }, 24 * 60 * 60 * 1000);
 
@@ -344,7 +354,7 @@ setInterval(() => {
 cleanupSessionCache();
 
 client.initialize().catch((err) => {
-  console.error('❌ Erro ao inicializar o cliente WhatsApp:', err);
+  logError('❌ Erro ao inicializar o cliente WhatsApp:', err);
   broadcast({
     type: 'status',
     message: 'Erro ao inicializar: ' + err.message
@@ -354,8 +364,8 @@ client.initialize().catch((err) => {
 
 setInterval(() => {
   if (client.info) {
-    console.log(`Status do cliente: ✅ Conectado (${client.info.pushname})`);
+    log(`Status do cliente: ✅ Conectado (${client.info.pushname})`);
   } else {
-    console.log('Status do cliente: ❌ Desconectado (aguardando autenticação)');
+    log('Status do cliente: ❌ Desconectado (aguardando autenticação)');
   }
 }, 10000);
