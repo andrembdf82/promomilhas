@@ -4,110 +4,43 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a WhatsApp bot backend built with Node.js that uses `whatsapp-web.js` to connect to WhatsApp Web. It runs a WebSocket server to broadcast WhatsApp events to connected clients in real-time.
-
-## Core Architecture
-
-### Main Components
-
-- **WhatsApp Client** (`index.js:9-27`): Uses the `whatsapp-web.js` library to create a WhatsApp client with:
-  - Local authentication (session data stored in `./sessions`)
-  - Chromium/Puppeteer for WhatsApp Web automation
-  - Auto-restart on auth failures
-
-- **WebSocket Server** (`index.js:31-54`): Listens on port 3001 and:
-  - Maintains a list of connected sockets in the `sockets` array
-  - Sends messages via the `broadcast()` function (`index.js:56-67`)
-  - Handles client connections, disconnections, and errors
-
-- **Message Processing** (`index.js:150-224`): The `processarMensagem()` function:
-  - Handles incoming WhatsApp messages and media
-  - Extracts message metadata (sender, chat type, timestamp, etc.)
-  - Filters out notification templates
-  - Broadcasts relevant events to WebSocket clients
-  - Only broadcasts images for media (other types are logged but ignored)
-
-### Event Flow
-
-1. WhatsApp client emits events (message, qr, authenticated, error, etc.)
-2. Events trigger handlers that either:
-   - Log status changes (`client.on('ready')`, `client.on('change_state')`)
-   - Process messages via `processarMensagem()` which broadcasts to WebSocket clients
-   - Handle authentication and connection states
-
-### Data Flow
-
-WebSocket clients receive broadcasted events as JSON objects with these message types:
-- `status`: Connection/authentication status updates
-- `message`: Text messages from WhatsApp
-- `media`: Image media from WhatsApp
+WhatsApp bot backend built with Node.js. Connects to WhatsApp Web via `whatsapp-web.js` (Puppeteer/Chromium) and broadcasts incoming messages to WebSocket clients in real-time.
 
 ## Development Commands
 
 ```bash
-# Start the bot
-npm start
-
-# (No other scripts currently configured)
+npm start        # Start the bot (node index.js)
 ```
 
-## Key Configuration Points
+No test suite, linter, or build step is configured.
 
-- **WhatsApp Session Storage**: `./sessions/` directory
-- **WebSocket Port**: `3001`
-- **Puppeteer Options** (`index.js:14-23`): Running headless mode with various sandbox/GPU/memory flags for reliability
-- **Connection Timeouts**: 10-second takeover timeout for conflict resolution
+## Architecture
 
-## Important Notes for Development
+Single-file application (`index.js`) using ES modules (`"type": "module"` in package.json).
 
-1. **Session Persistence**: Authentication credentials are stored in `./sessions/`. Don't commit this directory; add to `.gitignore` if not already present.
+**WhatsApp Client**: Uses `whatsapp-web.js` with `LocalAuth` strategy (sessions stored in `./sessions/`). Runs headless Chromium via Puppeteer with sandbox-disabled flags for server environments. On first run, prints a QR code to the terminal for authentication.
 
-2. **QR Code Authentication**: On first run or after logout, the bot generates a QR code in the terminal. Users must scan with WhatsApp to authenticate.
+**WebSocket Server**: Listens on port `3001` (configurable via `WS_PORT` env var). Maintains connected clients in a `Set`. The `broadcast()` function sends JSON to all open sockets and cleans up dead connections inline.
 
-3. **Graceful Shutdown**: The application handles SIGINT, SIGTERM, uncaught exceptions, and unhandled rejections with proper cleanup (`exitHandler`).
+**Message Flow**:
+1. WhatsApp client emits `message` and `message_create` events
+2. Both route to `processMessage()`, which skips `fromMe` messages
+3. Media messages (image/video/audio/document) broadcast as `media_notice` type (media is NOT downloaded to save memory)
+4. Text messages broadcast as `message` type
+5. Auth/connection events broadcast as `status` type
 
-4. **Error Recovery**: Messages are wrapped in try-catch blocks to prevent one malformed message from crashing the bot.
+## Key Files
 
-5. **Media Handling**: Only image media is broadcasted to WebSocket clients; other media types are logged but filtered out.
+- `index.js` — Active production code
+- `index_whatsappweb.js` — Previous version with session cache cleanup (`cleanupSessionCache`)
+- `index_old.js` — Minimal original version
+- `index - Copia.js` — Backup copy
 
-6. **Performance**: The application logs connection status every 10 seconds (`setInterval` at `index.js:270`).
+## Important Details
 
-7. **Chat Information**: The `safeGetChat()` function (`index.js:138-148`) safely retrieves chat metadata with fallback values if the operation fails.
-
-## Server Setup & Performance
-
-The project uses **Baileys** to connect directly to WhatsApp via WebSocket protocol, without requiring Chromium/browser:
-
-**Why Baileys (not whatsapp-web.js):**
-- Direct WebSocket connection to WhatsApp servers
-- No Puppeteer/Chromium needed (saves ~200MB RAM)
-- Lightweight and stable on t2.micro and other small instances
-- Better reliability for message delivery
-- Automatic reconnection with exponential backoff
-
-**Optimizations for t2.micro (1GB RAM):**
-- No logger (removed pino logger for memory savings)
-- Minimized in-memory buffers (`maxMsgsInMemory: 10`)
-- Status updates only every 60 seconds (not every 10)
-- Max 5 reconnection attempts to prevent infinite loops
-- Lightweight broadcast function with socket cleanup
-- No async/await chains that pile up promises
-
-**Running on AWS EC2 t2.micro:**
-```bash
-npm start
-```
-- Expects ~80MB RAM baseline
-- Image downloads buffered then streamed (not kept in memory)
-- Suitable for production use on t2.micro, t2.small
-
-## Session Cache Cleanup
-
-The `sessions/` directory grows over time due to browser cache. The application automatically cleans up unnecessary cache files while preserving authentication data:
-
-- **Automatic Cleanup**: Runs on startup and every 24 hours via `cleanupSessionCache()` function
-- **Preserved**: The `Default/` directory (contains cookies and localStorage with auth data)
-- **Cleaned**: Cache directories (Cache, Code Cache, File System, CertificateRevocation, etc.) and journal files
-- **Interval**: Change the cleanup interval (currently 24 hours) in the `setInterval` call before `client.initialize()`
-
-The `sessions/` directory is ignored in `.gitignore` to prevent committing session data.
+- **No media downloads**: To keep memory low (targeting AWS t2.micro), media is never downloaded — only a `media_notice` is broadcast with metadata.
+- **Status heartbeat**: Logs connection status every 60 seconds via `setInterval`.
+- **Graceful shutdown**: Handles SIGINT, SIGTERM, uncaught exceptions, and unhandled rejections. The `shuttingDown` flag prevents double-cleanup.
+- **Duplicate prevention**: `message_create` handler also skips `fromMe`, so the same external message may be processed twice (once per event). This is intentional for reliability.
+- **Sessions directory**: Contains Chromium profile + auth data. Ignored in `.gitignore`. Do not commit.
+- **Dependencies**: Only `whatsapp-web.js` and `qrcode-terminal` (plus `ws` via Node built-in WebSocket server module).

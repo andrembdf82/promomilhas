@@ -82,8 +82,12 @@ wss.on('connection', (ws) => {
 });
 
 function broadcast(data) {
-  if (sockets.size === 0) return;
+  if (sockets.size === 0) {
+    log('⚠️ Nenhum cliente WebSocket conectado — mensagem descartada:', data.type);
+    return;
+  }
 
+  log(`📤 Enviando ${data.type} para ${sockets.size} cliente(s)`);
   const json = JSON.stringify(data);
 
   for (const ws of sockets) {
@@ -187,6 +191,16 @@ function getMessageText(msg) {
 }
 
 // =========================
+// Grupos monitorados (só baixa imagens desses grupos)
+// =========================
+const GRUPOS_MONITORADOS = ['Mundo Plus #773'];
+
+function isGrupoMonitorado(chatName) {
+  if (!chatName) return false;
+  return GRUPOS_MONITORADOS.some(g => chatName.includes(g));
+}
+
+// =========================
 // Processamento de mensagens
 // =========================
 async function processMessage(msg, sourceEvent) {
@@ -211,17 +225,32 @@ async function processMessage(msg, sourceEvent) {
     log(`📝 Texto: ${text.substring(0, 500)}`);
     log('==============================\n');
 
-    // t2.micro: não baixa mídia, só sinaliza que chegou
-    if (type === 'image' || type === 'video' || type === 'audio' || type === 'document' || msg.hasMedia) {
-      broadcast({
-        type: 'media_notice',
-        from: msg.from,
-        body: text,
-        messageType: type,
-        isGroup: chat.isGroup || false,
-        chatName: chat.name || 'Chat privado',
-        timestamp: msg.timestamp || Math.floor(Date.now() / 1000)
-      });
+    // Imagens de grupos monitorados: baixa e envia como Base64
+    if (type === 'image' && isGrupoMonitorado(chat.name)) {
+      try {
+        const media = await msg.downloadMedia();
+        if (media) {
+          broadcast({
+            type: 'media',
+            from: msg.from,
+            body: text,
+            data: media.data,
+            mediaType: media.mimetype,
+            filename: media.filename || null,
+            isGroup: chat.isGroup || false,
+            chatName: chat.name || 'Chat privado',
+            timestamp: msg.timestamp || Math.floor(Date.now() / 1000)
+          });
+          log(`📤 Imagem enviada de ${chat.name} (${(media.data.length / 1024).toFixed(0)} KB base64)`);
+          return;
+        }
+      } catch (mediaErr) {
+        logError('⚠️ Erro ao baixar mídia:', mediaErr.message);
+      }
+    }
+
+    // Vídeos, áudios, documentos e imagens fora de grupos monitorados: ignora
+    if (type === 'video' || type === 'audio' || type === 'document' || type === 'image' || msg.hasMedia) {
       return;
     }
 
@@ -229,7 +258,6 @@ async function processMessage(msg, sourceEvent) {
       type: 'message',
       from: msg.from,
       body: text,
-      messageType: type,
       isGroup: chat.isGroup || false,
       chatName: chat.name || 'Chat privado',
       timestamp: msg.timestamp || Math.floor(Date.now() / 1000)
