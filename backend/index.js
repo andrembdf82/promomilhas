@@ -197,7 +197,8 @@ const GRUPOS_MONITORADOS = ['Mundo Plus #773'];
 
 function isGrupoMonitorado(chatName) {
   if (!chatName) return false;
-  return GRUPOS_MONITORADOS.some(g => chatName.includes(g));
+  const lower = chatName.toLowerCase();
+  return GRUPOS_MONITORADOS.some(g => lower.includes(g.toLowerCase()));
 }
 
 // =========================
@@ -268,15 +269,9 @@ async function processMessage(msg, sourceEvent) {
   }
 }
 
-// Evento principal
+// Evento principal (apenas 'message' para evitar duplicação)
 client.on('message', async (msg) => {
   await processMessage(msg, 'message');
-});
-
-// Mantém para diagnóstico, mas sem duplicar mensagens próprias
-client.on('message_create', async (msg) => {
-  if (msg.fromMe) return;
-  await processMessage(msg, 'message_create');
 });
 
 // =========================
