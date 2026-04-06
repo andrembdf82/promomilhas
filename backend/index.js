@@ -7,9 +7,15 @@ import { WebSocketServer } from 'ws';
 // =========================
 // Configuração
 // =========================
-const WS_PORT = process.env.WS_PORT || 3001;
+const WS_PORT = Number(process.env.WS_PORT || 3001);
 const STATUS_INTERVAL_MS = 60000; // 1 minuto
+const LOG_HEARTBEAT = false; // deixe false para reduzir logs e uso de I/O
+const ENABLE_VERBOSE_STATE_LOGS = false; // true só se precisar depurar
+const ENABLE_MEDIA_DOWNLOAD = true; // se quiser economizar ainda mais RAM, mude para false
+
 let shuttingDown = false;
+let pageOptimized = false;
+let lastKnownStatus = 'Desconhecido';
 
 // =========================
 // Logs simples
@@ -31,17 +37,41 @@ const client = new Client({
   },
   puppeteer: {
     headless: true,
+    defaultViewport: {
+      width: 800,
+      height: 600
+    },
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-accelerated-2d-canvas',
+      '--disable-gpu',
       '--no-first-run',
       '--no-zygote',
-      '--disable-gpu',
-      '--single-process', // MUITO importante
-      '--disable-features=site-per-process'
-    ],
+      '--single-process',
+      '--disable-features=site-per-process',
+
+      // Redução extra de consumo
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-sync',
+      '--disable-translate',
+      '--metrics-recording-only',
+      '--mute-audio',
+      '--no-default-browser-check',
+      '--disable-default-apps',
+      '--disable-popup-blocking',
+      '--disable-notifications',
+      '--disable-infobars',
+      '--disable-renderer-backgrounding',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-breakpad',
+      '--disable-component-extensions-with-background-pages',
+      '--disable-ipc-flooding-protection',
+      '--force-color-profile=srgb',
+      '--window-size=800,600'
+    ]
   },
   restartOnAuthFail: true,
   takeoverOnConflict: true,
@@ -81,11 +111,9 @@ wss.on('connection', (ws) => {
 
 function broadcast(data) {
   if (sockets.size === 0) {
-    log('⚠️ Nenhum cliente WebSocket conectado — mensagem descartada:', data.type);
     return;
   }
 
-  log(`📤 Enviando ${data.type} para ${sockets.size} cliente(s)`);
   const json = JSON.stringify(data);
 
   for (const ws of sockets) {
@@ -102,9 +130,78 @@ function broadcast(data) {
 }
 
 // =========================
+// Otimizações da página Puppeteer
+// =========================
+async function optimizeWhatsAppPage() {
+  if (pageOptimized) return;
+
+  try {
+    const page = client.pupPage;
+    if (!page) {
+      log('⚠️ Página do Puppeteer ainda não disponível para otimização');
+      return;
+    }
+
+    // Desabilita cache para evitar acúmulo
+    await page.setCacheEnabled(false);
+
+    // Bloqueia recursos pesados e supérfluos
+    await page.setRequestInterception(true);
+
+    page.on('request', (req) => {
+      try {
+        const resourceType = req.resourceType();
+        const url = req.url();
+
+        // Recursos mais pesados ou desnecessários
+        if (
+          resourceType === 'image' ||
+          resourceType === 'media' ||
+          resourceType === 'font'
+        ) {
+          return req.abort();
+        }
+
+        // Alguns endpoints acessórios que não ajudam no bot
+        if (
+          url.includes('doubleclick.net') ||
+          url.includes('google-analytics.com') ||
+          url.includes('googletagmanager.com')
+        ) {
+          return req.abort();
+        }
+
+        return req.continue();
+      } catch {
+        try {
+          return req.continue();
+        } catch {
+          return;
+        }
+      }
+    });
+
+    page.on('error', (err) => {
+      logError('❌ Erro na página Puppeteer:', err.message);
+    });
+
+    page.on('pageerror', (err) => {
+      logError('❌ Erro de execução na página Puppeteer:', err.message);
+    });
+
+    pageOptimized = true;
+    log('✅ Otimizações de RAM aplicadas na página do WhatsApp Web');
+  } catch (error) {
+    logError('⚠️ Não foi possível otimizar a página Puppeteer:', error.message);
+  }
+}
+
+// =========================
 // Eventos do WhatsApp
 // =========================
 client.on('qr', (qr) => {
+  lastKnownStatus = 'QR gerado';
+
   log('\n📷 QR recebido. Escaneie com o WhatsApp:\n');
   qrcode.generate(qr, { small: true });
 
@@ -115,17 +212,23 @@ client.on('qr', (qr) => {
 });
 
 client.on('authenticated', () => {
+  lastKnownStatus = 'Autenticado';
   log('✅ Autenticado com sucesso!');
+
   broadcast({
     type: 'status',
     message: 'Autenticado com sucesso'
   });
 });
 
-client.on('ready', () => {
+client.on('ready', async () => {
+  lastKnownStatus = 'Conectado';
+
   log('✅ WhatsApp conectado e pronto para uso!');
   log('👤 Usuário:', client.info?.pushname || 'Desconhecido');
   log('📱 Número:', client.info?.wid?.user || 'Desconhecido');
+
+  await optimizeWhatsAppPage();
 
   broadcast({
     type: 'status',
@@ -136,7 +239,9 @@ client.on('ready', () => {
 });
 
 client.on('auth_failure', (msg) => {
+  lastKnownStatus = 'Falha na autenticação';
   logError('❌ Falha na autenticação:', msg);
+
   broadcast({
     type: 'status',
     message: `Falha na autenticação: ${msg}`
@@ -144,20 +249,26 @@ client.on('auth_failure', (msg) => {
 });
 
 client.on('disconnected', (reason) => {
+  lastKnownStatus = `Desconectado: ${reason}`;
+  pageOptimized = false;
+
   logError('❌ Cliente desconectado:', reason);
+
   broadcast({
     type: 'status',
     message: `Desconectado: ${reason}`
   });
 });
 
-client.on('loading_screen', (percent, message) => {
-  log(`🔄 Carregando: ${percent}% - ${message}`);
-});
+if (ENABLE_VERBOSE_STATE_LOGS) {
+  client.on('loading_screen', (percent, message) => {
+    log(`🔄 Carregando: ${percent}% - ${message}`);
+  });
 
-client.on('change_state', (state) => {
-  log('🔄 Estado do cliente:', state);
-});
+  client.on('change_state', (state) => {
+    log('🔄 Estado do cliente:', state);
+  });
+}
 
 client.on('error', (err) => {
   logError('❌ Erro no cliente:', err);
@@ -189,14 +300,14 @@ function getMessageText(msg) {
 }
 
 // =========================
-// Grupos monitorados (só baixa imagens desses grupos)
+// Grupos monitorados
 // =========================
 const GRUPOS_MONITORADOS = ['Mundo Plus #773'];
 
 function isGrupoMonitorado(chatName) {
   if (!chatName) return false;
   const lower = chatName.toLowerCase();
-  return GRUPOS_MONITORADOS.some(g => lower.includes(g.toLowerCase()));
+  return GRUPOS_MONITORADOS.some((g) => lower.includes(g.toLowerCase()));
 }
 
 // =========================
@@ -204,30 +315,26 @@ function isGrupoMonitorado(chatName) {
 // =========================
 async function processMessage(msg, sourceEvent) {
   try {
-    if (!msg) return;
-    if (msg.fromMe) return;
+    if (!msg || msg.fromMe) return;
 
     const chat = await safeGetChat(msg);
     const text = getMessageText(msg);
     const type = msg.type || 'desconhecido';
-    const timestamp = msg.timestamp
-      ? new Date(msg.timestamp * 1000).toLocaleString('pt-BR')
-      : new Date().toLocaleString('pt-BR');
 
-    log('\n==============================');
-    log(`📩 MENSAGEM RECEBIDA - ${sourceEvent}`);
-    log(`🕒 ${timestamp}`);
-    log(`👤 De: ${msg.from}`);
-    log(`💬 Chat: ${chat.name || msg.from}`);
-    log(`👥 Grupo: ${chat.isGroup ? 'sim' : 'não'}`);
-    log(`🧩 Tipo: ${type}`);
-    log(`📝 Texto: ${text.substring(0, 500)}`);
-    log('==============================\n');
+    // Log mais enxuto para reduzir I/O
+    log(
+      `📩 ${sourceEvent} | tipo=${type} | chat="${chat.name || msg.from}" | grupo=${chat.isGroup ? 'sim' : 'não'} | texto="${text.substring(0, 120)}"`
+    );
 
     // Imagens de grupos monitorados: baixa e envia como Base64
-    if (type === 'image' && isGrupoMonitorado(chat.name)) {
+    if (
+      ENABLE_MEDIA_DOWNLOAD &&
+      type === 'image' &&
+      isGrupoMonitorado(chat.name)
+    ) {
       try {
         const media = await msg.downloadMedia();
+
         if (media) {
           broadcast({
             type: 'media',
@@ -240,7 +347,10 @@ async function processMessage(msg, sourceEvent) {
             chatName: chat.name || 'Chat privado',
             timestamp: msg.timestamp || Math.floor(Date.now() / 1000)
           });
-          log(`📤 Imagem enviada de ${chat.name} (${(media.data.length / 1024).toFixed(0)} KB base64)`);
+
+          log(
+            `📤 Imagem enviada de ${chat.name} (${(media.data.length / 1024).toFixed(0)} KB base64)`
+          );
           return;
         }
       } catch (mediaErr) {
@@ -248,8 +358,14 @@ async function processMessage(msg, sourceEvent) {
       }
     }
 
-    // Vídeos, áudios, documentos e imagens fora de grupos monitorados: ignora
-    if (type === 'video' || type === 'audio' || type === 'document' || type === 'image' || msg.hasMedia) {
+    // Ignora mídias para economizar memória
+    if (
+      type === 'video' ||
+      type === 'audio' ||
+      type === 'document' ||
+      type === 'image' ||
+      msg.hasMedia
+    ) {
       return;
     }
 
@@ -267,7 +383,7 @@ async function processMessage(msg, sourceEvent) {
   }
 }
 
-// Evento principal (apenas 'message' para evitar duplicação)
+// Evento principal
 client.on('message', async (msg) => {
   await processMessage(msg, 'message');
 });
@@ -282,6 +398,12 @@ async function exitHandler(signal) {
   log(`🛑 Encerrando aplicação... Sinal recebido: ${signal}`);
 
   try {
+    for (const ws of sockets) {
+      try {
+        ws.close();
+      } catch {}
+    }
+    sockets.clear();
     wss.close();
   } catch {}
 
@@ -317,7 +439,13 @@ client.initialize().catch((err) => {
   process.exit(1);
 });
 
-// Status leve
-setInterval(() => {
-  log('ℹ️ Status do cliente:', client.info ? 'Conectado' : 'Desconectado');
+// Heartbeat leve
+const heartbeat = setInterval(() => {
+  if (!LOG_HEARTBEAT) return;
+  log('ℹ️ Status do cliente:', client.info ? 'Conectado' : lastKnownStatus);
 }, STATUS_INTERVAL_MS);
+
+// Evita manter o processo vivo só por causa do timer
+if (typeof heartbeat.unref === 'function') {
+  heartbeat.unref();
+}
