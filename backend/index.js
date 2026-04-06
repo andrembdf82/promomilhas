@@ -35,15 +35,13 @@ const client = new Client({
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--disable-gpu',
+      '--disable-accelerated-2d-canvas',
       '--no-first-run',
       '--no-zygote',
-      '--disable-extensions',
-      '--disable-background-networking',
-      '--disable-background-timer-throttling',
-      '--disable-renderer-backgrounding',
-      '--disable-backgrounding-occluded-windows'
-    ]
+      '--disable-gpu',
+      '--single-process', // MUITO importante
+      '--disable-features=site-per-process'
+    ],
   },
   restartOnAuthFail: true,
   takeoverOnConflict: true,
