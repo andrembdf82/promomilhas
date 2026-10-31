@@ -12,6 +12,7 @@ export function createExposeFunctionIfAbsent() {
     if (bindings.has(name)) return bindings.get(name);
 
     const registration = (async () => {
+      if (process.env.DEBUG_WHATSAPP === '1') console.log(`🔧 Registrando evento: ${name}`);
       const exists = await page.evaluate(name => !!window[name], name);
       if (exists) return;
       try {
@@ -21,6 +22,7 @@ export function createExposeFunctionIfAbsent() {
           throw error;
         }
       }
+      if (process.env.DEBUG_WHATSAPP === '1') console.log(`🔧 Evento registrado: ${name}`);
     })();
     bindings.set(name, registration);
     try {

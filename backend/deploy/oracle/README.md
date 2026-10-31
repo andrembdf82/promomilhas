@@ -7,6 +7,40 @@ Mundo Plus #773. O consumo do Chromium ainda precisa ser medido na VM.
 
 ## Enviar do computador para a VM
 
+### Testar localmente com mensagens para você mesmo
+
+Na pasta `backend`, com as dependências instaladas e o arquivo
+`grupos-monitorados.txt` criado a partir do exemplo, execute:
+
+```bash
+WHATSAPP_SELF_CHAT_NAME='Mundo Plus #773' npm run dev:self
+```
+
+Conecte a conta pelo QR code, aguarde o bot ficar pronto e mantenha o backend
+Java conectado ao WebSocket (`ws://localhost:3001` por padrão). Envie textos ou
+imagens na conversa “Mensagem para você” da conta conectada. O terminal registra
+`teste consigo mesmo` para as mensagens aceitas.
+
+`dev:self` ativa `WHATSAPP_SELF_CHAT_TEST=1` em desenvolvimento. A opção é ignorada
+em produção. Mensagens próprias em grupos ou para outras pessoas continuam
+bloqueadas, assim como mensagens privadas recebidas de terceiros.
+
+Para testar mensagens próprias em um grupo específico, defina também
+`WHATSAPP_TEST_GROUP_ID` com o identificador completo desse grupo (`...@g.us`).
+Somente esse grupo é liberado, apenas com o modo de teste ativo fora de produção.
+Ele usa o mesmo `WHATSAPP_SELF_CHAT_NAME` enviado ao backend. O nome visível de um
+grupo, como “Para mim”, não o torna uma conversa privada consigo mesmo.
+
+`WHATSAPP_SELF_CHAT_NAME` define o `chatName` enviado ao backend; sem essa variável,
+o nome é `Teste WhatsApp`. O Java atualmente filtra pelo nome `Mundo Plus #773`,
+por isso o comando acima usa esse valor. O campo `isGroup` permanece `false`.
+Para testar o processamento de uma promoção, envie uma imagem de ida, uma de
+volta e depois um texto com um programa de milhas selecionado no backend.
+Esse fluxo pode gerar registros e alertas no backend conectado.
+
+Para desativar, encerre o bot e execute `npm run dev` sem a variável
+`WHATSAPP_SELF_CHAT_TEST`. Validação automatizada: `npm test`.
+
 Na raiz de `promomilhas/backend`, prepare a configuração local dos grupos antes de empacotar:
 
 ```bash
@@ -21,7 +55,7 @@ Depois execute:
 ```bash
 tar -czf /tmp/airlert-whatsapp.tar.gz \
   package.json package-lock.json index.js whatsapp-client.js \
-  page-bindings.js message-processor.js monitored-groups.js grupos-monitorados.txt deploy/oracle
+  page-bindings.js message-processor.js self-chat.js media-download.js monitored-groups.js grupos-monitorados.txt deploy/oracle
 scp -i /caminho/chave.key /tmp/airlert-whatsapp.tar.gz ubuntu@IP_PUBLICO:~/
 ssh -i /caminho/chave.key ubuntu@IP_PUBLICO
 ```

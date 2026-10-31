@@ -1,5 +1,7 @@
 import { loadMonitoredGroups } from './monitored-groups.js';
 import { createMessageProcessor } from './message-processor.js';
+import { createSelfChatMatcher } from './self-chat.js';
+import { downloadWhatsAppMedia } from './media-download.js';
 import pkg from './whatsapp-client.js';
 const { Client, LocalAuth } = pkg;
 
@@ -12,6 +14,9 @@ import { WebSocketServer } from 'ws';
 const WS_PORT = Number(process.env.WS_PORT || 3001);
 const WS_HOST = process.env.WS_HOST || '127.0.0.1';
 const ENVIRONMENT = process.env.NODE_ENV || 'development';
+const SELF_CHAT_TEST = process.env.WHATSAPP_SELF_CHAT_TEST === '1' && ENVIRONMENT !== 'production';
+const SELF_CHAT_NAME = process.env.WHATSAPP_SELF_CHAT_NAME?.trim() || 'Teste WhatsApp';
+const TEST_GROUP_ID = process.env.WHATSAPP_TEST_GROUP_ID?.trim() || '';
 const MONITORED_GROUPS = loadMonitoredGroups();
 const STATUS_INTERVAL_MS = 60000; // 1 minuto
 const LOG_HEARTBEAT = false; // deixe false para reduzir logs e uso de I/O
@@ -93,7 +98,9 @@ wss.on('connection', (ws) => {
 });
 
 function broadcast(data) {
+  const isMessage = data.type === 'message' || data.type === 'media';
   if (sockets.size === 0) {
+    if (isMessage) logError('⚠️ Mensagem não encaminhada: nenhum cliente WebSocket conectado.');
     return;
   }
 
@@ -102,7 +109,13 @@ function broadcast(data) {
   for (const ws of sockets) {
     if (ws.readyState === 1) {
       try {
-        ws.send(json);
+        ws.send(json, error => {
+          if (error) {
+            logError('⚠️ Falha no envio ao cliente WebSocket:', error.message);
+          } else if (isMessage) {
+            log(`📡 ${data.type} enviada ao cliente WebSocket | conversa=${data.chatName}`);
+          }
+        });
       } catch {
         sockets.delete(ws);
       }
@@ -276,27 +289,36 @@ client.on('error', (err) => {
 // Produção restringe textos e imagens; desenvolvimento libera textos de outros grupos.
 const processMessage = createMessageProcessor({
   environment: ENVIRONMENT,
+  selfChatTest: SELF_CHAT_TEST,
+  selfChatName: SELF_CHAT_NAME,
+  testGroupId: TEST_GROUP_ID,
+  matchesSelfChat: createSelfChatMatcher(client),
   monitoredGroups: MONITORED_GROUPS,
   broadcast,
   log,
   logError,
   downloadImages: ENABLE_MEDIA_DOWNLOAD,
+  downloadImage: msg => downloadWhatsAppMedia(client.pupPage, msg),
   onMatched: () => { receivedMessages++; }
 });
 
 log(`🌍 Ambiente: ${ENVIRONMENT} | textos: ${ENVIRONMENT === 'production' ? 'somente grupos do arquivo' : 'todos os grupos'} | imagens: somente grupos do arquivo`);
 
 log('📋 Grupos monitorados:', MONITORED_GROUPS.length ? MONITORED_GROUPS.join(' | ') : 'nenhum (lista vazia)');
+log(`🧪 Teste consigo mesmo: ${SELF_CHAT_TEST ? `ativo | nome enviado ao backend: ${SELF_CHAT_NAME}` : 'desativado'}`);
+if (SELF_CHAT_TEST && TEST_GROUP_ID) log('🧪 Mensagens próprias do grupo de teste configurado também estão habilitadas.');
 
 // Evento principal
 client.on('message', async (msg) => {
   await processMessage(msg, 'message');
 });
 
-// Own messages do not emit "message". Make self-chat tests visible in debug
-// mode without forwarding sent messages to WebSocket consumers.
-client.on('message_create', (msg) => {
-  if (ENABLE_VERBOSE_STATE_LOGS && msg.fromMe) {
+// Incoming messages also emit this event; process only our own messages here.
+client.on('message_create', async (msg) => {
+  if (!msg.fromMe) return;
+  if (SELF_CHAT_TEST) {
+    await processMessage(msg, 'message_create');
+  } else if (ENABLE_VERBOSE_STATE_LOGS) {
     log('📤 Mensagem enviada pela própria conta; não conta como recebida.');
   }
 });

@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "NODE_ENV=development node index.js",
+    "dev:self": "NODE_ENV=development WHATSAPP_SELF_CHAT_TEST=1 node index.js",
     "start:prod": "NODE_ENV=production node index.js",
     "test": "node --test *.test.js"
   },
