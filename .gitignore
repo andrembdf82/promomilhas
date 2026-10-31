@@ -6,3 +6,8 @@ npm-debug.log
 .wwebjs_auth
 .wwebjs_cache
 sessions
+
+# Local monitoring configuration and historical working copies
+backend/grupos-monitorados.txt
+backend/index_funciona_redondo_aws.js
+backend/index_funcionou_aws.js

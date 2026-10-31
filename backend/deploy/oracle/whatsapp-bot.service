@@ -1,0 +1,26 @@
+[Unit]
+Description=Airlert WhatsApp Bot
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/whatsapp-bot
+EnvironmentFile=/etc/airlert/whatsapp.env
+ExecStart=/usr/local/bin/node /home/ubuntu/whatsapp-bot/index.js
+Restart=always
+RestartSec=20
+TimeoutStopSec=45
+KillMode=control-group
+UMask=0077
+MemoryAccounting=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=whatsapp-bot
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,6 @@
-import pkg from 'whatsapp-web.js';
+import { loadMonitoredGroups } from './monitored-groups.js';
+import { createMessageProcessor } from './message-processor.js';
+import pkg from './whatsapp-client.js';
 const { Client, LocalAuth } = pkg;
 
 import qrcode from 'qrcode-terminal';
@@ -8,14 +10,20 @@ import { WebSocketServer } from 'ws';
 // Configuração
 // =========================
 const WS_PORT = Number(process.env.WS_PORT || 3001);
+const WS_HOST = process.env.WS_HOST || '127.0.0.1';
+const ENVIRONMENT = process.env.NODE_ENV || 'development';
+const MONITORED_GROUPS = loadMonitoredGroups();
 const STATUS_INTERVAL_MS = 60000; // 1 minuto
 const LOG_HEARTBEAT = false; // deixe false para reduzir logs e uso de I/O
-const ENABLE_VERBOSE_STATE_LOGS = false; // true só se precisar depurar
+const ENABLE_VERBOSE_STATE_LOGS = process.env.DEBUG_WHATSAPP === '1';
 const ENABLE_MEDIA_DOWNLOAD = true; // se quiser economizar ainda mais RAM, mude para false
 
 let shuttingDown = false;
 let pageOptimized = false;
 let lastKnownStatus = 'Desconhecido';
+let readyTimer;
+let receivedMessages = 0;
+const observedPages = new WeakSet();
 
 // =========================
 // Logs simples
@@ -30,10 +38,11 @@ log('▶️ Iniciando inicialização do cliente WhatsApp...');
 // =========================
 const client = new Client({
   authStrategy: new LocalAuth({
-    dataPath: './sessions'
+    dataPath: './sessions',
+    clientId: process.env.WHATSAPP_SESSION_ID || undefined
   }),
   webVersionCache: {
-    type: 'local'
+    type: 'none'
   },
   puppeteer: {
     headless: true,
@@ -44,33 +53,7 @@ const client = new Client({
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--disable-gpu',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process',
-      '--disable-features=site-per-process',
-
-      // Redução extra de consumo
-      '--disable-extensions',
-      '--disable-background-networking',
-      '--disable-sync',
-      '--disable-translate',
-      '--metrics-recording-only',
-      '--mute-audio',
-      '--no-default-browser-check',
-      '--disable-default-apps',
-      '--disable-popup-blocking',
-      '--disable-notifications',
-      '--disable-infobars',
-      '--disable-renderer-backgrounding',
-      '--disable-backgrounding-occluded-windows',
-      '--disable-breakpad',
-      '--disable-component-extensions-with-background-pages',
-      '--disable-ipc-flooding-protection',
-      '--force-color-profile=srgb',
-      '--window-size=800,600'
+      '--disable-dev-shm-usage'
     ]
   },
   restartOnAuthFail: true,
@@ -83,7 +66,7 @@ log('✅ Cliente WhatsApp configurado, aguardando inicialização...');
 // =========================
 // WebSocket leve
 // =========================
-const wss = new WebSocketServer({ port: WS_PORT });
+const wss = new WebSocketServer({ host: WS_HOST, port: WS_PORT });
 const sockets = new Set();
 
 wss.on('connection', (ws) => {
@@ -202,7 +185,7 @@ async function optimizeWhatsAppPage() {
 client.on('qr', (qr) => {
   lastKnownStatus = 'QR gerado';
 
-  log('\n📷 QR recebido. Escaneie com o WhatsApp:\n');
+  log(`\n📷 QR atualizado às ${new Date().toLocaleTimeString()}. Escaneie somente o último QR exibido:\n`);
   qrcode.generate(qr, { small: true });
 
   broadcast({
@@ -212,8 +195,19 @@ client.on('qr', (qr) => {
 });
 
 client.on('authenticated', () => {
+  const page = client.pupPage;
+  if (page && !observedPages.has(page)) {
+    observedPages.add(page);
+    page.on('pageerror', err => logError('❌ Erro no WhatsApp Web durante sincronização:', err.message));
+    page.on('error', err => logError('❌ Falha na página do WhatsApp Web:', err.message));
+  }
   lastKnownStatus = 'Autenticado';
-  log('✅ Autenticado com sucesso!');
+  log('✅ Autenticado. Aguardando sincronização e ativação dos eventos de mensagens...');
+  clearTimeout(readyTimer);
+  readyTimer = setTimeout(() => {
+    logError('⚠️ A autenticação terminou, mas o cliente ainda não ficou pronto para receber mensagens. Último status:', lastKnownStatus);
+  }, 60000);
+  readyTimer.unref();
 
   broadcast({
     type: 'status',
@@ -222,13 +216,15 @@ client.on('authenticated', () => {
 });
 
 client.on('ready', async () => {
+  clearTimeout(readyTimer);
   lastKnownStatus = 'Conectado';
 
   log('✅ WhatsApp conectado e pronto para uso!');
   log('👤 Usuário:', client.info?.pushname || 'Desconhecido');
   log('📱 Número:', client.info?.wid?.user || 'Desconhecido');
 
-  await optimizeWhatsAppPage();
+  // Resource interception is optional while diagnosing connection issues.
+  if (process.env.OPTIMIZE_WHATSAPP === '1') await optimizeWhatsAppPage();
 
   broadcast({
     type: 'status',
@@ -239,6 +235,7 @@ client.on('ready', async () => {
 });
 
 client.on('auth_failure', (msg) => {
+  clearTimeout(readyTimer);
   lastKnownStatus = 'Falha na autenticação';
   logError('❌ Falha na autenticação:', msg);
 
@@ -249,6 +246,7 @@ client.on('auth_failure', (msg) => {
 });
 
 client.on('disconnected', (reason) => {
+  clearTimeout(readyTimer);
   lastKnownStatus = `Desconectado: ${reason}`;
   pageOptimized = false;
 
@@ -258,6 +256,7 @@ client.on('disconnected', (reason) => {
     type: 'status',
     message: `Desconectado: ${reason}`
   });
+  if (process.env.RESTART_ON_DISCONNECT === '1') void exitHandler('disconnected');
 });
 
 if (ENABLE_VERBOSE_STATE_LOGS) {
@@ -274,118 +273,32 @@ client.on('error', (err) => {
   logError('❌ Erro no cliente:', err);
 });
 
-// =========================
-// Função segura para obter chat
-// =========================
-async function safeGetChat(msg) {
-  try {
-    return await msg.getChat();
-  } catch (error) {
-    logError('❌ Erro ao obter informações do chat:', error.message);
-    return {
-      isGroup: false,
-      name: 'Chat desconhecido'
-    };
-  }
-}
+// Produção restringe textos e imagens; desenvolvimento libera textos de outros grupos.
+const processMessage = createMessageProcessor({
+  environment: ENVIRONMENT,
+  monitoredGroups: MONITORED_GROUPS,
+  broadcast,
+  log,
+  logError,
+  downloadImages: ENABLE_MEDIA_DOWNLOAD,
+  onMatched: () => { receivedMessages++; }
+});
 
-// =========================
-// Extrair conteúdo textual
-// =========================
-function getMessageText(msg) {
-  if (msg.body) return msg.body;
-  if (msg._data?.caption) return msg._data.caption;
-  if (msg._data?.body) return msg._data.body;
-  return '[Sem texto]';
-}
+log(`🌍 Ambiente: ${ENVIRONMENT} | textos: ${ENVIRONMENT === 'production' ? 'somente grupos do arquivo' : 'todos os grupos'} | imagens: somente grupos do arquivo`);
 
-// =========================
-// Grupos monitorados
-// =========================
-const GRUPOS_MONITORADOS = ['Mundo Plus #773'];
-
-function isGrupoMonitorado(chatName) {
-  if (!chatName) return false;
-  const lower = chatName.toLowerCase();
-  return GRUPOS_MONITORADOS.some((g) => lower.includes(g.toLowerCase()));
-}
-
-// =========================
-// Processamento de mensagens
-// =========================
-async function processMessage(msg, sourceEvent) {
-  try {
-    if (!msg || msg.fromMe) return;
-
-    const chat = await safeGetChat(msg);
-    const text = getMessageText(msg);
-    const type = msg.type || 'desconhecido';
-
-    // Log mais enxuto para reduzir I/O
-    log(
-      `📩 ${sourceEvent} | tipo=${type} | chat="${chat.name || msg.from}" | grupo=${chat.isGroup ? 'sim' : 'não'} | texto="${text.substring(0, 120)}"`
-    );
-
-    // Imagens de grupos monitorados: baixa e envia como Base64
-    if (
-      ENABLE_MEDIA_DOWNLOAD &&
-      type === 'image' &&
-      isGrupoMonitorado(chat.name)
-    ) {
-      try {
-        const media = await msg.downloadMedia();
-
-        if (media) {
-          broadcast({
-            type: 'media',
-            from: msg.from,
-            body: text,
-            data: media.data,
-            mediaType: media.mimetype,
-            filename: media.filename || null,
-            isGroup: chat.isGroup || false,
-            chatName: chat.name || 'Chat privado',
-            timestamp: msg.timestamp || Math.floor(Date.now() / 1000)
-          });
-
-          log(
-            `📤 Imagem enviada de ${chat.name} (${(media.data.length / 1024).toFixed(0)} KB base64)`
-          );
-          return;
-        }
-      } catch (mediaErr) {
-        logError('⚠️ Erro ao baixar mídia:', mediaErr.message);
-      }
-    }
-
-    // Ignora mídias para economizar memória
-    if (
-      type === 'video' ||
-      type === 'audio' ||
-      type === 'document' ||
-      type === 'image' ||
-      msg.hasMedia
-    ) {
-      return;
-    }
-
-    broadcast({
-      type: 'message',
-      from: msg.from,
-      body: text,
-      isGroup: chat.isGroup || false,
-      chatName: chat.name || 'Chat privado',
-      timestamp: msg.timestamp || Math.floor(Date.now() / 1000)
-    });
-  } catch (error) {
-    logError('⚠️ Erro ao processar mensagem:', error.message);
-    logError(error.stack);
-  }
-}
+log('📋 Grupos monitorados:', MONITORED_GROUPS.length ? MONITORED_GROUPS.join(' | ') : 'nenhum (lista vazia)');
 
 // Evento principal
 client.on('message', async (msg) => {
   await processMessage(msg, 'message');
+});
+
+// Own messages do not emit "message". Make self-chat tests visible in debug
+// mode without forwarding sent messages to WebSocket consumers.
+client.on('message_create', (msg) => {
+  if (ENABLE_VERBOSE_STATE_LOGS && msg.fromMe) {
+    log('📤 Mensagem enviada pela própria conta; não conta como recebida.');
+  }
 });
 
 // =========================
@@ -394,6 +307,7 @@ client.on('message', async (msg) => {
 async function exitHandler(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
+  clearTimeout(readyTimer);
 
   log(`🛑 Encerrando aplicação... Sinal recebido: ${signal}`);
 
@@ -441,8 +355,8 @@ client.initialize().catch((err) => {
 
 // Heartbeat leve
 const heartbeat = setInterval(() => {
-  if (!LOG_HEARTBEAT) return;
-  log('ℹ️ Status do cliente:', client.info ? 'Conectado' : lastKnownStatus);
+  if (!LOG_HEARTBEAT && !ENABLE_VERBOSE_STATE_LOGS) return;
+  log('ℹ️ Status do cliente:', lastKnownStatus, '| Mensagens recebidas:', receivedMessages);
 }, STATUS_INTERVAL_MS);
 
 // Evita manter o processo vivo só por causa do timer
