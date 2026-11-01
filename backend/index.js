@@ -1,3 +1,4 @@
+import { createOfferSender } from './offer-sender.js';
 import { loadMonitoredGroups } from './monitored-groups.js';
 import { createMessageProcessor } from './message-processor.js';
 import { createSelfChatMatcher } from './self-chat.js';
@@ -17,6 +18,8 @@ const ENVIRONMENT = process.env.NODE_ENV || 'development';
 const SELF_CHAT_TEST = process.env.WHATSAPP_SELF_CHAT_TEST === '1' && ENVIRONMENT !== 'production';
 const SELF_CHAT_NAME = process.env.WHATSAPP_SELF_CHAT_NAME?.trim() || 'Teste WhatsApp';
 const TEST_GROUP_ID = process.env.WHATSAPP_TEST_GROUP_ID?.trim() || '';
+const PRODUCTION_TEST_GROUP = ENVIRONMENT === 'production' &&
+  process.env.WHATSAPP_ALLOW_TEST_GROUP_IN_PRODUCTION === '1';
 const MONITORED_GROUPS = loadMonitoredGroups();
 const STATUS_INTERVAL_MS = 60000; // 1 minuto
 const LOG_HEARTBEAT = false; // deixe false para reduzir logs e uso de I/O
@@ -67,6 +70,20 @@ const client = new Client({
 });
 
 log('✅ Cliente WhatsApp configurado, aguardando inicialização...');
+
+let offerSender;
+if (process.env.WHATSAPP_SEND_SECRET) {
+  offerSender = await createOfferSender({
+    client,
+    isReady: () => !shuttingDown && lastKnownStatus === 'Conectado',
+    secret: process.env.WHATSAPP_SEND_SECRET,
+    ledgerPath: process.env.WHATSAPP_SEND_LEDGER || './sessions/offer-deliveries.json'
+  });
+  offerSender.listen(Number(process.env.WHATSAPP_SEND_PORT || 3002),
+    process.env.WHATSAPP_SEND_HOST || '127.0.0.1',
+    () => log('✅ Endpoint privado de envio de ofertas disponível'));
+}
+
 
 // =========================
 // WebSocket leve
@@ -292,6 +309,7 @@ const processMessage = createMessageProcessor({
   selfChatTest: SELF_CHAT_TEST,
   selfChatName: SELF_CHAT_NAME,
   testGroupId: TEST_GROUP_ID,
+  allowTestGroupInProduction: PRODUCTION_TEST_GROUP,
   matchesSelfChat: createSelfChatMatcher(client),
   monitoredGroups: MONITORED_GROUPS,
   broadcast,
@@ -306,7 +324,9 @@ log(`🌍 Ambiente: ${ENVIRONMENT} | textos: ${ENVIRONMENT === 'production' ? 's
 
 log('📋 Grupos monitorados:', MONITORED_GROUPS.length ? MONITORED_GROUPS.join(' | ') : 'nenhum (lista vazia)');
 log(`🧪 Teste consigo mesmo: ${SELF_CHAT_TEST ? `ativo | nome enviado ao backend: ${SELF_CHAT_NAME}` : 'desativado'}`);
-if (SELF_CHAT_TEST && TEST_GROUP_ID) log('🧪 Mensagens próprias do grupo de teste configurado também estão habilitadas.');
+if ((SELF_CHAT_TEST || PRODUCTION_TEST_GROUP) && TEST_GROUP_ID) {
+  log(`🧪 Mensagens próprias do grupo de teste habilitadas | ambiente=${ENVIRONMENT} | nome enviado ao backend: ${SELF_CHAT_NAME}`);
+}
 
 // Evento principal
 client.on('message', async (msg) => {
@@ -316,7 +336,7 @@ client.on('message', async (msg) => {
 // Incoming messages also emit this event; process only our own messages here.
 client.on('message_create', async (msg) => {
   if (!msg.fromMe) return;
-  if (SELF_CHAT_TEST) {
+  if (SELF_CHAT_TEST || (PRODUCTION_TEST_GROUP && TEST_GROUP_ID)) {
     await processMessage(msg, 'message_create');
   } else if (ENABLE_VERBOSE_STATE_LOGS) {
     log('📤 Mensagem enviada pela própria conta; não conta como recebida.');
@@ -329,6 +349,7 @@ client.on('message_create', async (msg) => {
 async function exitHandler(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
+  offerSender?.close();
   clearTimeout(readyTimer);
 
   log(`🛑 Encerrando aplicação... Sinal recebido: ${signal}`);

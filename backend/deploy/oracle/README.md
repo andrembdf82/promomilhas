@@ -31,6 +31,10 @@ Somente esse grupo é liberado, apenas com o modo de teste ativo fora de produç
 Ele usa o mesmo `WHATSAPP_SELF_CHAT_NAME` enviado ao backend. O nome visível de um
 grupo, como “Para mim”, não o torna uma conversa privada consigo mesmo.
 
+Para uma exceção temporária e explícita de grupo em produção, consulte
+[Teste no Google Cloud](../google-cloud/README.md#teste-temporário-no-grupo-para-mim-em-produção).
+Essa exceção não habilita conversas privadas nem altera os filtros dos demais grupos.
+
 `WHATSAPP_SELF_CHAT_NAME` define o `chatName` enviado ao backend; sem essa variável,
 o nome é `Teste WhatsApp`. O Java atualmente filtra pelo nome `Mundo Plus #773`,
 por isso o comando acima usa esse valor. O campo `isGroup` permanece `false`.
@@ -55,7 +59,7 @@ Depois execute:
 ```bash
 tar -czf /tmp/airlert-whatsapp.tar.gz \
   package.json package-lock.json index.js whatsapp-client.js \
-  page-bindings.js message-processor.js self-chat.js media-download.js monitored-groups.js grupos-monitorados.txt deploy/oracle
+  page-bindings.js message-processor.js self-chat.js media-download.js offer-sender.js monitored-groups.js grupos-monitorados.txt deploy/oracle
 scp -i /caminho/chave.key /tmp/airlert-whatsapp.tar.gz ubuntu@IP_PUBLICO:~/
 ssh -i /caminho/chave.key ubuntu@IP_PUBLICO
 ```

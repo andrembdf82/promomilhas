@@ -8,10 +8,57 @@ const monitoredGroups = ['Mundo Plus #773'];
 const isMonitoredGroup = createGroupMatcher(monitoredGroups);
 const createMessageProcessor = options => createProcessor({ monitoredGroups, ...options });
 
-test('explicit test group forwards own text and images without chat lookup', async () => {
+test('slow image downloads cannot be overtaken by following images or text', async () => {
+  const sent = [];
+  let releaseFirst;
+  let firstStarted;
+  const started = new Promise(resolve => { firstStarted = resolve; });
+  const firstDownload = new Promise(resolve => { releaseFirst = resolve; });
+  const process = createMessageProcessor({
+    environment: 'production', testGroupId: '123@g.us', allowTestGroupInProduction: true,
+    broadcast: data => sent.push(data), logError: error => assert.fail(error)
+  });
+  const own = { fromMe: true, from: '456@lid', to: '123@g.us' };
+  const first = process(message('Para mim', {
+    ...own, type: 'image', body: 'Ida',
+    downloadMedia: async () => { firstStarted(); return firstDownload; }
+  }), 'message_create');
+  await started;
+  const second = process(message('Para mim', {
+    ...own, type: 'image', body: 'Volta',
+    downloadMedia: async () => ({ data: 'volta', mimetype: 'image/jpeg' })
+  }), 'message_create');
+  const text = process(message('Para mim', { ...own, body: 'LATAM Pass' }), 'message_create');
+  // Another conversation can still progress while this download is pending.
+  await process(message(undefined, { from: 'other@g.us', body: 'Outro grupo monitorado' }));
+  assert.deepEqual(sent.map(m => m.body), ['Outro grupo monitorado']);
+  releaseFirst({ data: 'ida', mimetype: 'image/jpeg' });
+  await Promise.all([first, second, text]);
+  assert.deepEqual(sent.slice(1).map(m => [m.type, m.body]), [
+    ['media', 'Ida'], ['media', 'Volta'], ['message', 'LATAM Pass']
+  ]);
+});
+
+test('a failed message does not prevent the next message in its conversation', async () => {
+  const sent = [];
+  const errors = [];
+  const process = createMessageProcessor({
+    broadcast: data => sent.push(data), logError: (...args) => errors.push(args)
+  });
+  await Promise.all([
+    process(message(undefined, { type: 'image', downloadMedia: async () => { throw new Error('download failed'); } })),
+    process(message(undefined, { body: 'Mensagem seguinte' }))
+  ]);
+  assert.equal(errors.length, 1);
+  assert.deepEqual(sent.map(m => m.body), ['Mensagem seguinte']);
+});
+
+for (const environment of ['development', 'production']) {
+test(`${environment}: explicit test group forwards own text and images without chat lookup`, async () => {
   const sent = [];
   const process = createMessageProcessor({
-    environment: 'development', selfChatTest: true, testGroupId: '123@g.us',
+    environment, selfChatTest: environment !== 'production', testGroupId: '123@g.us',
+    allowTestGroupInProduction: environment === 'production',
     selfChatName: 'Mundo Plus #773', broadcast: data => sent.push(data),
     logError: error => assert.fail(error)
   });
@@ -24,6 +71,26 @@ test('explicit test group forwards own text and images without chat lookup', asy
   }
   assert.deepEqual(sent.map(m => m.type), ['message', 'media']);
   assert.ok(sent.every(m => m.chatName === 'Mundo Plus #773' && m.isGroup));
+});
+}
+
+test('production group opt-in preserves private, own-group and monitored-group restrictions', async () => {
+  const sent = [];
+  const process = createMessageProcessor({
+    environment: 'production', selfChatTest: true, testGroupId: '123@g.us',
+    allowTestGroupInProduction: true, broadcast: data => sent.push(data),
+    matchesSelfChat: async () => assert.fail('Private self-chat must stay disabled'),
+    logError: error => assert.fail(error)
+  });
+  await process(selfMessage(), 'message_create');
+  await process(message('Para mim', { fromMe: true, to: '999@g.us' }), 'message_create');
+  await process(message('Outro grupo'));
+  await process(message('Outro grupo', { type: 'image', hasMedia: true }));
+  await process(message('Privado', { getChat: async () => ({ isGroup: false }) }));
+  await process(message('Para mim', { fromMe: true, to: '123@g.us' }), 'message');
+  assert.equal(sent.length, 0);
+  await process(message());
+  assert.equal(sent.length, 1);
 });
 
 test('own test group messages stay blocked without opt-in, in production and for other destinations', async () => {

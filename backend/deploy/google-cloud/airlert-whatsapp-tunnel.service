@@ -1,0 +1,16 @@
+[Unit]
+Description=Private connection from Oracle backend to Google Cloud WhatsApp bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/home/ubuntu/.ssh/airlert-whatsapp-google-known-hosts -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=15 -i /home/ubuntu/.ssh/airlert-whatsapp-google -L 127.0.0.1:3001:127.0.0.1:3001 -L 127.0.0.1:3002:127.0.0.1:3002 airlert-tunnel@136.72.12.220
+Restart=always
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

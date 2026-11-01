@@ -1,26 +1,28 @@
 import { createGroupMatcher } from './monitored-groups.js';
 
-export function createMessageProcessor({ broadcast, log = () => {}, logError = () => {}, onMatched = () => {}, downloadImages = true, downloadImage = msg => msg.downloadMedia(), environment = 'production', monitoredGroups = [], selfChatTest = false, selfChatName = 'Teste WhatsApp', testGroupId = '', matchesSelfChat = async msg => typeof msg.to === 'string' && /@(c\.us|lid)$/.test(msg.to) && msg.from === msg.to }) {
+export function createMessageProcessor({ broadcast, log = () => {}, logError = () => {}, onMatched = () => {}, downloadImages = true, downloadImage = msg => msg.downloadMedia(), environment = 'production', monitoredGroups = [], selfChatTest = false, selfChatName = 'Teste WhatsApp', testGroupId = '', allowTestGroupInProduction = false, matchesSelfChat = async msg => typeof msg.to === 'string' && /@(c\.us|lid)$/.test(msg.to) && msg.from === msg.to }) {
   if (!['development', 'test', 'production'].includes(environment)) {
     throw new Error(`NODE_ENV inválido: ${environment}. Use development, test ou production.`);
   }
   const isMonitoredGroup = createGroupMatcher(monitoredGroups);
   const allowSelfChat = selfChatTest && environment !== 'production';
+  const allowTestGroup = Boolean(testGroupId && (allowSelfChat ||
+    (environment === 'production' && allowTestGroupInProduction)));
   if (testGroupId && !/^\d+(?:-\d+)?@g\.us$/.test(testGroupId)) {
     throw new Error('WHATSAPP_TEST_GROUP_ID deve ser o identificador completo do grupo (@g.us).');
   }
-  return async function processMessage(msg, sourceEvent = 'message') {
-    if (!msg || (msg.fromMe && (!allowSelfChat || sourceEvent !== 'message_create'))) return;
+  const processMessage = async (msg, sourceEvent) => {
+    if (!msg || (msg.fromMe && ((!allowSelfChat && !allowTestGroup) || sourceEvent !== 'message_create'))) return;
     let stage = 'identificar conversa';
     try {
       const type = msg.type || 'desconhecido';
       if (type !== 'chat' && type !== 'image') return;
       if (type === 'chat' && msg.hasMedia) return;
       let isSelfChat = false;
-      const isTestGroup = Boolean(msg.fromMe && allowSelfChat && testGroupId && msg.to === testGroupId);
+      const isTestGroup = Boolean(msg.fromMe && allowTestGroup && msg.to === testGroupId);
       if (msg.fromMe) {
         stage = 'identificar destinatário da própria conta';
-        isSelfChat = !isTestGroup && await matchesSelfChat(msg);
+        isSelfChat = allowSelfChat && !isTestGroup && await matchesSelfChat(msg);
         if (!isSelfChat && !isTestGroup) return;
       }
       const isTestMessage = isSelfChat || isTestGroup;
@@ -70,5 +72,21 @@ export function createMessageProcessor({ broadcast, log = () => {}, logError = (
       logError(`⚠️ Erro ao processar mensagem | etapa=${stage} | evento=${sourceEvent} | tipo=${msg.type} | propria=${Boolean(msg.fromMe)}:`,
         error?.stack || error?.message || String(error));
     }
+  };
+
+  // EventEmitter does not await async listeners. Queue by conversation so a
+  // text cannot overtake image downloads, without blocking unrelated chats.
+  const pending = new Map();
+  return (msg, sourceEvent = 'message') => {
+    if (!msg) return Promise.resolve();
+    const chatId = msg.fromMe ? msg.to : msg.from;
+    const previous = pending.get(chatId) || Promise.resolve();
+    const current = previous.catch(() => {}).then(() => processMessage(msg, sourceEvent));
+    pending.set(chatId, current);
+    const cleanup = () => {
+      if (pending.get(chatId) === current) pending.delete(chatId);
+    };
+    current.then(cleanup, cleanup);
+    return current;
   };
 }
