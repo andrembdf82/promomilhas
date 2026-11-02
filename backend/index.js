@@ -3,6 +3,7 @@ import { loadMonitoredGroups } from './monitored-groups.js';
 import { createMessageProcessor } from './message-processor.js';
 import { createSelfChatMatcher } from './self-chat.js';
 import { downloadWhatsAppMedia } from './media-download.js';
+import { getChatSummary } from './chat-summary.js';
 import pkg from './whatsapp-client.js';
 const { Client, LocalAuth } = pkg;
 
@@ -60,8 +61,7 @@ const client = new Client({
     },
     args: [
       '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage'
+      '--disable-setuid-sandbox'
     ]
   },
   restartOnAuthFail: true,
@@ -312,6 +312,7 @@ const processMessage = createMessageProcessor({
   allowTestGroupInProduction: PRODUCTION_TEST_GROUP,
   matchesSelfChat: createSelfChatMatcher(client),
   monitoredGroups: MONITORED_GROUPS,
+  getChat: msg => getChatSummary(client.pupPage, msg),
   broadcast,
   log,
   logError,

@@ -59,7 +59,7 @@ Depois execute:
 ```bash
 tar -czf /tmp/airlert-whatsapp.tar.gz \
   package.json package-lock.json index.js whatsapp-client.js \
-  page-bindings.js message-processor.js self-chat.js media-download.js offer-sender.js monitored-groups.js grupos-monitorados.txt deploy/oracle
+  page-bindings.js message-processor.js chat-summary.js self-chat.js media-download.js offer-sender.js monitored-groups.js grupos-monitorados.txt deploy/oracle
 scp -i /caminho/chave.key /tmp/airlert-whatsapp.tar.gz ubuntu@IP_PUBLICO:~/
 ssh -i /caminho/chave.key ubuntu@IP_PUBLICO
 ```

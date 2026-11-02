@@ -16,7 +16,8 @@ Chaves adicionadas apenas em `~/.ssh/authorized_keys` podem ser sobrescritas pel
 agente do Google. O usuário precisa de sudo para instalar os componentes.
 
 Copie os arquivos ativos de `backend`, incluindo `package-lock.json`,
-`grupos-monitorados.txt`, `self-chat.js`, `media-download.js`, `offer-sender.js` e `deploy`.
+`grupos-monitorados.txt`, `self-chat.js`, `media-download.js`, `chat-summary.js`,
+`offer-sender.js` e `deploy`.
 Não copie sessões, credenciais ou `node_modules` do computador.
 
 Na VM, dentro de `~/whatsapp-bot`:
@@ -37,6 +38,24 @@ sudo journalctl -u whatsapp-bot -n 60 -f -o cat
 A swap tem 2 GiB e é persistida no `/etc/fstab`. O instalador não substitui swap
 existente. Node 22 é instalado a partir do binário oficial com checksum validado.
 O Puppeteer baixa seu navegador durante `npm ci`, sob o mesmo usuário do serviço.
+
+Na VM de 1 GiB, o Chromium pode saturar o disco com paginação. Se não houver
+outro gerenciador de zram, habilite a swap comprimida de 768 MiB, com prioridade
+maior que a swap em disco existente:
+
+```bash
+sudo install -m 644 deploy/google-cloud/airlert-zram.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now airlert-zram
+swapon --show
+zramctl
+```
+
+O navegador utiliza `/dev/shm` da VM; não redirecione a memória compartilhada
+para `/tmp` com `--disable-dev-shm-usage`. O filtro de grupos consulta somente
+o nome já presente no cache, sem atualizar participantes ou buscar a última
+mensagem através de `getChat()`. Isso evita bloquear a captura de promoções
+em consultas desnecessárias do modelo completo da conversa.
 
 No WhatsApp, abra **Aparelhos conectados → Conectar aparelho** e escaneie o QR mais
 recente dos logs. Aguarde `WhatsApp conectado e pronto para uso!`. Preserve

@@ -1,6 +1,6 @@
 import { createGroupMatcher } from './monitored-groups.js';
 
-export function createMessageProcessor({ broadcast, log = () => {}, logError = () => {}, onMatched = () => {}, downloadImages = true, downloadImage = msg => msg.downloadMedia(), environment = 'production', monitoredGroups = [], selfChatTest = false, selfChatName = 'Teste WhatsApp', testGroupId = '', allowTestGroupInProduction = false, matchesSelfChat = async msg => typeof msg.to === 'string' && /@(c\.us|lid)$/.test(msg.to) && msg.from === msg.to }) {
+export function createMessageProcessor({ broadcast, log = () => {}, logError = () => {}, onMatched = () => {}, downloadImages = true, downloadImage = msg => msg.downloadMedia(), getChat = msg => msg.getChat(), environment = 'production', monitoredGroups = [], selfChatTest = false, selfChatName = 'Teste WhatsApp', testGroupId = '', allowTestGroupInProduction = false, matchesSelfChat = async msg => typeof msg.to === 'string' && /@(c\.us|lid)$/.test(msg.to) && msg.from === msg.to }) {
   if (!['development', 'test', 'production'].includes(environment)) {
     throw new Error(`NODE_ENV inválido: ${environment}. Use development, test ou production.`);
   }
@@ -29,7 +29,7 @@ export function createMessageProcessor({ broadcast, log = () => {}, logError = (
       stage = 'identificar conversa';
       const chat = isTestMessage
         ? { isGroup: isTestGroup, name: selfChatName }
-        : await msg.getChat();
+        : await getChat(msg);
       if (!isSelfChat && chat?.isGroup !== true) return;
       // Development/test permit text from other groups; images always stay scoped.
       if (!isTestMessage && (environment === 'production' || type === 'image') && !isMonitoredGroup(chat)) return;

@@ -1,0 +1,15 @@
+[Unit]
+Description=Compressed swap for the Airlert WhatsApp browser
+After=systemd-modules-load.service
+Before=whatsapp-bot.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe zram num_devices=1
+ExecStart=/usr/sbin/zramctl /dev/zram0 --algorithm lz4 --size 768M
+ExecStart=/sbin/mkswap /dev/zram0
+ExecStart=/sbin/swapon --priority 100 /dev/zram0
+
+[Install]
+WantedBy=multi-user.target
